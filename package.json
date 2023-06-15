@@ -1,0 +1,20 @@
+{
+  "name": "nova-vn",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "tsbuild": "npx tsc",
+    "tsbuild:watch": "npx tsc -w",
+    "run": "npx neu run",
+    "build": "npm run tsbuild && npx neu build --release"
+  },
+  "author": "Nova",
+  "license": "MIT",
+  "devDependencies": {
+    "@neutralinojs/neu": "^9.6.0",
+    "monaco-editor": "^0.39.0",
+    "neutralinojs-types": "^2.0.0",
+    "typescript": "^5.1.3"
+  }
+}
