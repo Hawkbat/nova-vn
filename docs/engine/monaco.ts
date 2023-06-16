@@ -4,7 +4,7 @@ const MONACO = (() => {
     const LANG_ID = 'nova-vn'
 
     let loadingPromise = createExposedPromise<void>()
-    let currentFile: ParseFileContext | null = null
+    let currentFile: FileContext | null = null
     let currentEditor: monaco.editor.IStandaloneCodeEditor | null = null
     
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.26.1/min/vs' }})
@@ -35,7 +35,7 @@ const MONACO = (() => {
         loadingPromise.resolve()
     })
     
-    async function makeCodeEditor(file: ParseFileContext) {
+    async function makeCodeEditor(file: FileContext) {
         await loadingPromise
 
         if (currentEditor) {
@@ -68,11 +68,15 @@ const MONACO = (() => {
             endColumn: e.range.end + 1,
         }))
         monaco.editor.setModelMarkers(model, LANG_ID, markers)
+
+        errorEditor.classList.remove('closed')
     
         currentEditor = monaco.editor.create(errorEditor, {
             model: model,
             theme: 'vs-dark',
         })
+
+        errorEditor.classList.remove('closed')
     }
 
     return {

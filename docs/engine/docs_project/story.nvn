@@ -1,0 +1,41 @@
+
+define character jane as "Jane"
+    has outfit professional
+        with expression happy
+        with expression neutral
+    has outfit casual
+        with expression happy
+
+define character john as "John"
+    has outfit professional
+        with expression happy
+        with expression neutral
+    has outfit casual
+        with expression happy
+
+define backdrop classroom
+define backdrop field
+define backdrop home
+
+define passage start
+    narrate "No project is currently loaded! To create a project, make a folder named 'project' next to the 'engine' folder, create a story file named 'story.nvn' inside the 'project' folder, and restart the application!"
+
+    option "Walk me through the tutorial"
+        go to docs_start
+
+define passage docs_start
+    jane enters from left
+    jane says "Hi! I'm Jane! I'll be your personal tutorial guide!"
+    narrate "What do you want to learn about?"
+
+    option "Project Structure"
+        end
+    
+    option "Characters"
+        end
+    
+    option "Backdrops and Sounds"
+        end
+
+    option "Variables"
+        end

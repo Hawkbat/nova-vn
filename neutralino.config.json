@@ -22,7 +22,6 @@
       "minWidth": 384,
       "minHeight": 216,
       "icon": "/docs/favicon.png",
-      "enableInspector": true,
       "exitProcessOnClose": true
     }
   },

@@ -1,164 +1,58 @@
 
 const INTERFACE = (() => {
+    const BACKDROP_HIDE_DURATION = 1000
+    const CHARACTER_HIDE_DURATION = 1000
+    const CHARACTER_MOVE_DURATION = 1000
+    const TEXT_HIDE_DURATION = 1000
+    const CHOICE_HIDE_DURATION = 1000
+
     let audioContext: AudioContext | null = null
     const characterElements: Partial<Record<string, HTMLElement>> = {}
     let textRevealPromise: ExposedPromise<void> | null = null
     let advancePromise: ExposedPromise<void> | null = null
-    
-    let viewState: Immutable<StoryViewState> = {
-        definition: {
-            characters: {},
-            backdrops: {},
-            sounds: {},
-            passages: {},
-            variables: {},
-        },
-        states: [],
-        backdropID: null,
-        characters: {},
-        text: '',
-        speaker: null,
+
+    async function reset() {
+        
     }
     
-    function updateViewState(updater: (state: Immutable<StoryViewState>) => Immutable<StoryViewState>) {
-        viewState = updater(viewState)
-    }
-    
-    async function changeBackdrop(backdropID: string | null) {
-        const backdropDef = backdropID ? viewState.definition.backdrops[backdropID] : null
-        if (backdropDef === undefined) throw new Error(`There are no defined backdrops named '${backdropID}'!`)
-    
-        updateViewState(viewState => {
-            return { ...viewState, backdropID: backdropID }   
-        })
-    
-        const oldElement = backdrop
-        const newElement = backdrop.cloneNode() as JSX.Element
-        newElement.classList.add('hide')
+    async function changeBackdrop(backdrop: BackdropDefinition | null) {
+        const oldElement = currentBackdrop
+        const newElement = currentBackdrop.cloneNode() as HTMLDivElement
+        currentBackdrop = newElement
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling)
-        newElement.style.backgroundImage = backdropDef ? `url(${backdropDef.path})` : 'transparent'
-    
-        requestAnimationFrame(() => {
-            oldElement.classList.add('hide')
-            newElement.classList.remove('hide')
-        })
+        newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent'
+        console.log(oldElement, newElement)
     
         setTimeout(() => {
             oldElement.remove()
-        }, 1000)
+        }, BACKDROP_HIDE_DURATION)
     }
     
-    async function playSound(soundID: string) {
-        const soundDef = viewState.definition.sounds[soundID]
-        if (!soundDef) throw new Error(`There are no defined sounds named '${soundID}'!`)
-        await playSoundRaw(soundDef.path, false)
+    async function playSound(sound: SoundDefinition) {
+        await playSoundRaw(sound.path, false)
     }
     
-    async function addCharacter(characterID: string) {
-        const characterDef = viewState.definition.characters[characterID]
-        if (!characterDef) throw new Error(`There are no defined characters named '${characterID}'!`)
-    
-        const [outfitID, outfitDef] = Object.entries(characterDef.outfits)[0]
-        if (!outfitDef) throw new Error(`There are no defined outfits for character named '${characterID}'!`)
-    
-        const [expressionID, expressionDef] = Object.entries(outfitDef.expressions)[0]
-        if (!expressionDef) throw new Error(`There are no defined expressions for outfit named '${outfitID}' in character named '${characterID}'!`)
-    
-        updateViewState(viewState => {
-            if (viewState.characters[characterID]) {
-                return viewState
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        outfit: outfitID,
-                        expression: expressionID,
-                    }
-                }
-            }
-        })
-    
-        const element = <div className="character hide" />
-        element.style.backgroundImage = `url(${expressionDef.path})`
+    async function addCharacter(character: CharacterDefinition, outfit: OutfitDefinition, expression: ExpressionDefinition, location: CharacterLocation) {    
+        const element = <div className="character" />
+        element.style.backgroundImage = `url(${expression.path})`
         characterBounds.append(element)
-        characterElements[characterID] = element
-    
-        requestAnimationFrame(() => {
-            element.classList.remove('hide')
-        })
+        characterElements[character.id] = element
+    }
+
+    async function removeCharacter(character: CharacterDefinition, location: CharacterLocation) {
+        const element = characterElements[character.id]!
+        element.classList.add('hide')
+        await wait(CHARACTER_HIDE_DURATION)
+        element.remove()
+    }
+
+    async function moveCharacter(character: CharacterDefinition, location: CharacterLocation) {
+        await wait(CHARACTER_MOVE_DURATION)
     }
     
-    async function changeCharacterOutfit(characterID: string, outfitID: string) {
-        if (!viewState.characters[characterID]) {
-            await addCharacter(characterID)
-        }
-    
-        const characterState = viewState.characters[characterID]!
-    
-        const characterDef = viewState.definition.characters[characterID]!
-        const outfitDef = characterDef.outfits[outfitID]
-        
-        if (!outfitDef) throw new Error(`There are no defined outfits named '${outfitID}' in character named '${characterID}'!`)
-    
-        const [expressionID, expressionDef] = characterState.expression in outfitDef.expressions ? [characterState.expression, outfitDef.expressions[characterState.expression]] : Object.entries(outfitDef.expressions)[0]
-        if (!expressionDef) throw new Error(`There are no defined expressions for outfit named '${outfitID}' in character named '${characterID}'!`)
-    
-        updateViewState(viewState => {
-            if (characterState.outfit === outfitID) {
-                return viewState
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        ...viewState.characters[characterID]!,
-                        outfit: outfitID,
-                        expression: expressionID,
-                    }
-                }
-            }
-        })
-    
-        const imgUrl = expressionDef.path
-        await updateCharacterRaw(characterID, imgUrl)
-    }
-    
-    async function changeCharacterExpression(characterID: string, expressionID: string) {
-        if (!viewState.characters[characterID]) {
-            await addCharacter(characterID)
-        }
-    
-        const characterState = viewState.characters[characterID]!
-        
-        const characterDef = viewState.definition.characters[characterID]!
-        const outfitDef = characterDef.outfits[characterState.outfit]!
-        const expressionDef = outfitDef.expressions[expressionID]
-        if (!expressionDef) throw new Error(`There are no defined expressions named '${expressionID}' for outfit named '${characterState.outfit}' in character named '${characterID}'!`)
-    
-        updateViewState(viewState => {
-            if (characterState.expression === expressionID) {
-                return viewState
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        ...viewState.characters[characterID]!,
-                        expression: expressionID,
-                    }
-                }
-            }
-        })
-    
-        const imgUrl = expressionDef.path
-        await updateCharacterRaw(characterID, imgUrl)
-    }
-    
-    async function updateCharacterRaw(characterID: string, imgUrl: string) {
+    async function changeCharacterSprite(character: CharacterDefinition, outfit: OutfitDefinition, expression: ExpressionDefinition) {        
+        const imgUrl = expression.path
+
         await new Promise<void>((resolve, reject) => {
             const img = new Image()
             img.onload = e => resolve()
@@ -166,37 +60,31 @@ const INTERFACE = (() => {
             img.src = imgUrl
         })
     
-        const oldElement = characterElements[characterID]!
+        const oldElement = characterElements[character.id]!
         const newElement = oldElement.cloneNode() as JSX.Element
-        newElement.classList.add('hide')
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling)
         newElement.style.backgroundImage = `url(${imgUrl})`
     
-        characterElements[characterID] = newElement
+        characterElements[character.id] = newElement
     
-        requestAnimationFrame(() => {
-            oldElement.classList.add('hide')
-            newElement.classList.remove('hide')
-        })
+        oldElement.classList.add('hide')
     
         setTimeout(() => {
             oldElement.remove()
-        }, 1000)
+        }, CHARACTER_HIDE_DURATION)
     }
     
-    async function displayText(text: string, speaker: string | null) {
-        updateViewState(viewState => {
-            return {
-                ...viewState,
-                text,
-                speaker,
-            }
-        })
-    
+    async function displayText(text: string, speaker: string | null) {    
         const skipPromise = createExposedPromise<void>()
         textRevealPromise = skipPromise
     
-        nameplate.textContent = speaker
+        if (speaker) {
+            nameplate.textContent = speaker
+            nameplate.classList.remove('hide')
+        } else {
+            nameplate.classList.add('hide')
+        }
+
         dialogue.textContent = ''
         caret.classList.add('hide')
         
@@ -204,11 +92,9 @@ const INTERFACE = (() => {
         for (const part of parts) {
             for (const char of part) {
                 await Promise.any([skipPromise, waitForNextFrame()])
-                const span = <span className="hide">{char}</span>
+                const span = <span>{char}</span>
                 dialogue.append(span)
-                await Promise.any([skipPromise, waitForNextFrame()])
-                span.classList.remove('hide')
-                Promise.any([skipPromise, wait(1000)]).then(() => {
+                Promise.any([skipPromise, wait(TEXT_HIDE_DURATION)]).then(() => {
                     const textNode = document.createTextNode(char)
                     span.replaceWith(textNode)
                     textNode.parentElement?.normalize()
@@ -228,6 +114,38 @@ const INTERFACE = (() => {
             textRevealPromise = null
             caret.classList.remove('hide')
         }
+
+        await INTERFACE.waitForAdvance()
+    }
+
+    async function presentChoice(options: ChoiceOption[]) {
+        const promise = createExposedPromise<ChoiceOption>()
+
+        caret.classList.add('hide')
+
+        let choiceElements = options.map(o => <div className="choice" onclick={e => {
+            e.preventDefault()
+            e.stopPropagation()
+            playSoundRaw('./engine/assets/click.mp3', true)
+            promise.resolve(o)
+        }}>{o.text}</div>)
+
+        for (const el of choiceElements) {
+            choiceList.append(el)
+        }
+
+        const chosenOption = await promise
+
+        for (const el of choiceElements) {
+            el.classList.add('hide')
+        }
+        setTimeout(() => {
+            for (const el of choiceElements) {
+                el.remove()
+            }
+        }, CHOICE_HIDE_DURATION)
+
+        await chosenOption.onSelect()
     }
     
     function clickAdvance(e: MouseEvent) {
@@ -285,12 +203,15 @@ const INTERFACE = (() => {
     })
 
     return {
+        reset,
         addCharacter,
-        changeCharacterOutfit,
-        changeCharacterExpression,
+        removeCharacter,
+        moveCharacter,
+        changeCharacterSprite,
         changeBackdrop,
         playSound,
         displayText,
+        presentChoice,
         waitForAdvance,
     }
 })()

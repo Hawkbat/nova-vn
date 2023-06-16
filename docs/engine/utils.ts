@@ -42,10 +42,11 @@ interface ExposedPromise<T> extends Promise<T> {
 }
 
 type Immutable<T> =
-    T extends Array<infer U> ? ReadonlyArray<U> :
-    T extends Map<infer K, infer V> ? ReadonlyMap<K, V> :
-    T extends Set<infer U> ? ReadonlySet<U> :
-    Readonly<T>
+    T extends Array<infer U> ? ReadonlyArray<Immutable<U>> :
+    T extends Map<infer K, infer V> ? ReadonlyMap<K, Immutable<V>> :
+    T extends Set<infer U> ? ReadonlySet<Immutable<U>> :
+    T extends object ? { readonly [K in keyof T]: Immutable<T[K]> } :
+    T
 
 declare module JSX {
     type Element = HTMLElementTagNameMap[keyof HTMLElementTagNameMap]

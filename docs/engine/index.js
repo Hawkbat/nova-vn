@@ -1,7 +1,10 @@
 "use strict";
-async function loadProject() {
-    const story = await PARSER.parseStory('project', 'project/story.nvn', async (path) => {
+async function loadProject(projectPath) {
+    const story = await PARSER.parseStory(projectPath, `${projectPath}/story.nvn`, async (path) => {
         const response = await fetch(path);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch project file ${path}`);
+        }
         const text = await response.text();
         return text;
     });
@@ -10,220 +13,114 @@ async function loadProject() {
             MONACO.makeCodeEditor(file);
         }
     }
-    console.log(story);
+    return story;
 }
 requestAnimationFrame(async () => {
-    await loadProject();
-    /*ENGINE.defineCharacter('vel', 'Vel')
-    ENGINE.defineCharacterOutfit('vel', 'casual')
-    ENGINE.defineCharacterExpression('vel', 'casual', 'neutral')
-    ENGINE.defineCharacterExpression('vel', 'casual', 'annoyed')
-    ENGINE.defineCharacterExpression('vel', 'casual', 'happy')
-    ENGINE.defineCharacterExpression('vel', 'casual', 'horny')
-    ENGINE.defineCharacterExpression('vel', 'casual', 'hungry')
-    ENGINE.defineCharacterOutfit('vel', 'casualBelly')
-    ENGINE.defineCharacterExpression('vel', 'casualBelly', 'happy')
-    ENGINE.defineCharacterOutfit('vel', 'casualBellyHuge')
-    ENGINE.defineCharacterExpression('vel', 'casualBellyHuge', 'neutral')
-    ENGINE.defineBackdrop('classroom1')
-    ENGINE.defineSound('GGP/Bweeeelch')
-    await ENGINE.changeBackdrop('classroom1')
-    await ENGINE.addCharacter('vel')
-    await ENGINE.changeCharacterOutfit('vel', 'casual')
-    await ENGINE.changeCharacterExpression('vel', 'happy')
-    await ENGINE.displayText('Oh, hello there! How are you?\nI\'m Vel! Vel Noire!', 'Vel')
-    await ENGINE.waitForAdvance()
-    await ENGINE.changeCharacterExpression('vel', 'hungry')
-    await ENGINE.displayText('Vel stares hungrily.', null)
-    await ENGINE.waitForAdvance()
-    await ENGINE.changeCharacterOutfit('vel', 'casualBelly')
-    await ENGINE.changeCharacterExpression('vel', 'happy')
-    await ENGINE.playSound('GGP/Bweeeelch')
-    await ENGINE.displayText('"Burrrrrrp!"', 'Vel')*/
+    let project;
+    try {
+        project = await loadProject('project');
+    }
+    catch (e) {
+        if (String(e).includes('Failed to fetch project file')) {
+            console.warn(`Unable to load project file; falling back to showing the docs project`);
+            project = await loadProject('engine/docs_project');
+        }
+        else {
+            throw e;
+        }
+    }
+    try {
+        await INTERPRETER.runProject(project);
+    }
+    catch (e) {
+        if (e instanceof ParseError || e instanceof InterpreterError) {
+            console.error(e);
+            e.file.errors.push(e);
+            MONACO.makeCodeEditor(e.file);
+        }
+        else {
+            throw e;
+        }
+    }
 });
 const INTERFACE = (() => {
+    const BACKDROP_HIDE_DURATION = 1000;
+    const CHARACTER_HIDE_DURATION = 1000;
+    const CHARACTER_MOVE_DURATION = 1000;
+    const TEXT_HIDE_DURATION = 1000;
+    const CHOICE_HIDE_DURATION = 1000;
     let audioContext = null;
     const characterElements = {};
     let textRevealPromise = null;
     let advancePromise = null;
-    let viewState = {
-        definition: {
-            characters: {},
-            backdrops: {},
-            sounds: {},
-            passages: {},
-            variables: {},
-        },
-        states: [],
-        backdropID: null,
-        characters: {},
-        text: '',
-        speaker: null,
-    };
-    function updateViewState(updater) {
-        viewState = updater(viewState);
+    async function reset() {
     }
-    async function changeBackdrop(backdropID) {
-        const backdropDef = backdropID ? viewState.definition.backdrops[backdropID] : null;
-        if (backdropDef === undefined)
-            throw new Error(`There are no defined backdrops named '${backdropID}'!`);
-        updateViewState(viewState => {
-            return { ...viewState, backdropID: backdropID };
-        });
-        const oldElement = backdrop;
-        const newElement = backdrop.cloneNode();
-        newElement.classList.add('hide');
+    async function changeBackdrop(backdrop) {
+        const oldElement = currentBackdrop;
+        const newElement = currentBackdrop.cloneNode();
+        currentBackdrop = newElement;
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling);
-        newElement.style.backgroundImage = backdropDef ? `url(${backdropDef.path})` : 'transparent';
-        requestAnimationFrame(() => {
-            oldElement.classList.add('hide');
-            newElement.classList.remove('hide');
-        });
+        newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent';
+        console.log(oldElement, newElement);
         setTimeout(() => {
             oldElement.remove();
-        }, 1000);
+        }, BACKDROP_HIDE_DURATION);
     }
-    async function playSound(soundID) {
-        const soundDef = viewState.definition.sounds[soundID];
-        if (!soundDef)
-            throw new Error(`There are no defined sounds named '${soundID}'!`);
-        await playSoundRaw(soundDef.path, false);
+    async function playSound(sound) {
+        await playSoundRaw(sound.path, false);
     }
-    async function addCharacter(characterID) {
-        const characterDef = viewState.definition.characters[characterID];
-        if (!characterDef)
-            throw new Error(`There are no defined characters named '${characterID}'!`);
-        const [outfitID, outfitDef] = Object.entries(characterDef.outfits)[0];
-        if (!outfitDef)
-            throw new Error(`There are no defined outfits for character named '${characterID}'!`);
-        const [expressionID, expressionDef] = Object.entries(outfitDef.expressions)[0];
-        if (!expressionDef)
-            throw new Error(`There are no defined expressions for outfit named '${outfitID}' in character named '${characterID}'!`);
-        updateViewState(viewState => {
-            if (viewState.characters[characterID]) {
-                return viewState;
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        outfit: outfitID,
-                        expression: expressionID,
-                    }
-                }
-            };
-        });
-        const element = h("div", { className: "character hide" });
-        element.style.backgroundImage = `url(${expressionDef.path})`;
+    async function addCharacter(character, outfit, expression, location) {
+        const element = h("div", { className: "character" });
+        element.style.backgroundImage = `url(${expression.path})`;
         characterBounds.append(element);
-        characterElements[characterID] = element;
-        requestAnimationFrame(() => {
-            element.classList.remove('hide');
-        });
+        characterElements[character.id] = element;
     }
-    async function changeCharacterOutfit(characterID, outfitID) {
-        if (!viewState.characters[characterID]) {
-            await addCharacter(characterID);
-        }
-        const characterState = viewState.characters[characterID];
-        const characterDef = viewState.definition.characters[characterID];
-        const outfitDef = characterDef.outfits[outfitID];
-        if (!outfitDef)
-            throw new Error(`There are no defined outfits named '${outfitID}' in character named '${characterID}'!`);
-        const [expressionID, expressionDef] = characterState.expression in outfitDef.expressions ? [characterState.expression, outfitDef.expressions[characterState.expression]] : Object.entries(outfitDef.expressions)[0];
-        if (!expressionDef)
-            throw new Error(`There are no defined expressions for outfit named '${outfitID}' in character named '${characterID}'!`);
-        updateViewState(viewState => {
-            if (characterState.outfit === outfitID) {
-                return viewState;
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        ...viewState.characters[characterID],
-                        outfit: outfitID,
-                        expression: expressionID,
-                    }
-                }
-            };
-        });
-        const imgUrl = expressionDef.path;
-        await updateCharacterRaw(characterID, imgUrl);
+    async function removeCharacter(character, location) {
+        const element = characterElements[character.id];
+        element.classList.add('hide');
+        await wait(CHARACTER_HIDE_DURATION);
+        element.remove();
     }
-    async function changeCharacterExpression(characterID, expressionID) {
-        if (!viewState.characters[characterID]) {
-            await addCharacter(characterID);
-        }
-        const characterState = viewState.characters[characterID];
-        const characterDef = viewState.definition.characters[characterID];
-        const outfitDef = characterDef.outfits[characterState.outfit];
-        const expressionDef = outfitDef.expressions[expressionID];
-        if (!expressionDef)
-            throw new Error(`There are no defined expressions named '${expressionID}' for outfit named '${characterState.outfit}' in character named '${characterID}'!`);
-        updateViewState(viewState => {
-            if (characterState.expression === expressionID) {
-                return viewState;
-            }
-            return {
-                ...viewState,
-                characters: {
-                    ...viewState.characters,
-                    [characterID]: {
-                        ...viewState.characters[characterID],
-                        expression: expressionID,
-                    }
-                }
-            };
-        });
-        const imgUrl = expressionDef.path;
-        await updateCharacterRaw(characterID, imgUrl);
+    async function moveCharacter(character, location) {
+        await wait(CHARACTER_MOVE_DURATION);
     }
-    async function updateCharacterRaw(characterID, imgUrl) {
+    async function changeCharacterSprite(character, outfit, expression) {
+        const imgUrl = expression.path;
         await new Promise((resolve, reject) => {
             const img = new Image();
             img.onload = e => resolve();
             img.onerror = e => reject(e);
             img.src = imgUrl;
         });
-        const oldElement = characterElements[characterID];
+        const oldElement = characterElements[character.id];
         const newElement = oldElement.cloneNode();
-        newElement.classList.add('hide');
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling);
         newElement.style.backgroundImage = `url(${imgUrl})`;
-        characterElements[characterID] = newElement;
-        requestAnimationFrame(() => {
-            oldElement.classList.add('hide');
-            newElement.classList.remove('hide');
-        });
+        characterElements[character.id] = newElement;
+        oldElement.classList.add('hide');
         setTimeout(() => {
             oldElement.remove();
-        }, 1000);
+        }, CHARACTER_HIDE_DURATION);
     }
     async function displayText(text, speaker) {
-        updateViewState(viewState => {
-            return {
-                ...viewState,
-                text,
-                speaker,
-            };
-        });
         const skipPromise = createExposedPromise();
         textRevealPromise = skipPromise;
-        nameplate.textContent = speaker;
+        if (speaker) {
+            nameplate.textContent = speaker;
+            nameplate.classList.remove('hide');
+        }
+        else {
+            nameplate.classList.add('hide');
+        }
         dialogue.textContent = '';
         caret.classList.add('hide');
         const parts = text.split(/\b/g);
         for (const part of parts) {
             for (const char of part) {
                 await Promise.any([skipPromise, waitForNextFrame()]);
-                const span = h("span", { className: "hide" }, char);
+                const span = h("span", null, char);
                 dialogue.append(span);
-                await Promise.any([skipPromise, waitForNextFrame()]);
-                span.classList.remove('hide');
-                Promise.any([skipPromise, wait(1000)]).then(() => {
+                Promise.any([skipPromise, wait(TEXT_HIDE_DURATION)]).then(() => {
                     const textNode = document.createTextNode(char);
                     span.replaceWith(textNode);
                     textNode.parentElement?.normalize();
@@ -243,6 +140,30 @@ const INTERFACE = (() => {
             textRevealPromise = null;
             caret.classList.remove('hide');
         }
+        await INTERFACE.waitForAdvance();
+    }
+    async function presentChoice(options) {
+        const promise = createExposedPromise();
+        caret.classList.add('hide');
+        let choiceElements = options.map(o => h("div", { className: "choice", onclick: e => {
+                e.preventDefault();
+                e.stopPropagation();
+                playSoundRaw('./engine/assets/click.mp3', true);
+                promise.resolve(o);
+            } }, o.text));
+        for (const el of choiceElements) {
+            choiceList.append(el);
+        }
+        const chosenOption = await promise;
+        for (const el of choiceElements) {
+            el.classList.add('hide');
+        }
+        setTimeout(() => {
+            for (const el of choiceElements) {
+                el.remove();
+            }
+        }, CHOICE_HIDE_DURATION);
+        await chosenOption.onSelect();
     }
     function clickAdvance(e) {
         e.preventDefault();
@@ -295,33 +216,396 @@ const INTERFACE = (() => {
         main.addEventListener('click', clickAdvance);
     });
     return {
+        reset,
         addCharacter,
-        changeCharacterOutfit,
-        changeCharacterExpression,
+        removeCharacter,
+        moveCharacter,
+        changeCharacterSprite,
         changeBackdrop,
         playSound,
         displayText,
+        presentChoice,
         waitForAdvance,
+    };
+})();
+const INTERPRETER = (() => {
+    async function runProject(project) {
+        await INTERFACE.reset();
+        const story = {
+            history: [],
+            state: {
+                passageID: null,
+                backdropID: null,
+                characters: {},
+                variables: {},
+            },
+        };
+        const initialPassage = Object.values(project.definition.passages)[0];
+        if (!initialPassage) {
+            throw new Error(`This story contains no passage definitions! You must have at least one passage.`);
+        }
+        updateStoryState(story, s => ({
+            ...s,
+            passageID: initialPassage.id,
+        }));
+        await runPassage(project, story, initialPassage);
+    }
+    async function runPassage(project, story, passage) {
+        await runActionList(project, story, passage.actions);
+    }
+    async function runActionList(project, story, actions) {
+        for (let i = 0; i < actions.length; i++) {
+            const action = actions[i];
+            const actionMap = {
+                continue: async (a) => {
+                    const passages = Object.values(project.definition.passages);
+                    const currentIndex = passages.findIndex(p => p?.id === story.state.passageID);
+                    const nextPassage = passages[currentIndex + 1];
+                    if (!nextPassage) {
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There is no passage after '${story.state.passageID}' to continue to!`);
+                    }
+                    pushState(story, nextPassage.id);
+                    await runPassage(project, story, nextPassage);
+                },
+                goto: async (a) => {
+                    const nextPassage = project.definition.passages[a.passageID];
+                    if (!nextPassage) {
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There is no passage named '${a.passageID}' to go to!`);
+                    }
+                    pushState(story, nextPassage.id);
+                    await runPassage(project, story, nextPassage);
+                },
+                end: async (a) => {
+                    throw new InterpreterError(project.files[a.range.file], a.range, `End of story reached!`);
+                },
+                backdropChange: async (a) => {
+                    const backdrop = project.definition.backdrops[a.backdropID];
+                    if (!backdrop)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined backdrops named '${a.backdropID}'!`);
+                    await INTERFACE.changeBackdrop(backdrop);
+                },
+                playSound: async (a) => {
+                    const sound = project.definition.sounds[a.soundID];
+                    if (!sound)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined sounds named '${a.soundID}'!`);
+                    await INTERFACE.playSound(sound);
+                },
+                narration: async (a) => {
+                    await INTERFACE.displayText(a.text, null);
+                },
+                option: async (a) => {
+                    let options = [a];
+                    while (actions[i + 1]?.type === 'option') {
+                        options.push(actions[i + 1]);
+                        i++;
+                    }
+                    await INTERFACE.presentChoice(options.map(o => ({
+                        text: o.text,
+                        onSelect: async () => await runActionList(project, story, o.actions),
+                    })));
+                },
+                characterEntry: async (a) => {
+                    const character = project.definition.characters[a.characterID];
+                    if (!character)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined characters named '${a.characterID}'!`);
+                    const outfit = Object.values(character.outfits)[0];
+                    if (!outfit)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined outfits for character named '${character.id}'!`);
+                    const expression = Object.values(outfit.expressions)[0];
+                    if (!expression)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined expressions for outfit named '${outfit.id}' in character named '${character.id}'!`);
+                    await INTERFACE.addCharacter(character, outfit, expression, a.location);
+                },
+                characterExit: async (a) => {
+                    const character = project.definition.characters[a.characterID];
+                    if (!character)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined characters named '${a.characterID}'!`);
+                    await INTERFACE.removeCharacter(character, a.location);
+                },
+                characterMove: async (a) => {
+                    const character = project.definition.characters[a.characterID];
+                    if (!character)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined characters named '${a.characterID}'!`);
+                    await INTERFACE.moveCharacter(character, a.location);
+                },
+                characterSpeech: async (a) => {
+                    await INTERFACE.displayText(a.text, project.definition.characters[a.characterID]?.name ?? null);
+                },
+                characterExpressionChange: async (a) => {
+                    const character = project.definition.characters[a.characterID];
+                    if (!character)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined characters named '${a.characterID}'!`);
+                    const outfit = character.outfits[story.state.characters[a.characterID]?.outfitID ?? ''] ?? Object.values(character.outfits)[0];
+                    if (!outfit)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined outfits in character named '${character.id}'!`);
+                    const expression = outfit.expressions[a.expressionID];
+                    if (!expression)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined expressions named '${a.expressionID}' for outfit named '${outfit.id}' in character named '${character.id}'!`);
+                    await INTERFACE.changeCharacterSprite(character, outfit, expression);
+                },
+                characterOutfitChange: async (a) => {
+                    const character = project.definition.characters[a.characterID];
+                    if (!character)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined characters named '${a.characterID}'!`);
+                    const outfit = character.outfits[a.outfitID];
+                    if (!outfit)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined outfits named '${a.outfitID}' in character named '${character.id}'!`);
+                    const expression = outfit.expressions[story.state.characters[a.characterID]?.expressionID ?? ''] ?? Object.values(outfit.expressions)[0];
+                    if (!expression)
+                        throw new InterpreterError(project.files[a.range.file], a.range, `There are no defined expressions for outfit named '${outfit.id}' in character named '${character.id}'!`);
+                    await INTERFACE.changeCharacterSprite(character, outfit, expression);
+                },
+                check: async (a) => {
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID);
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID);
+                    let valid = false;
+                    let comparisonMap = {};
+                    if (getVariableValueType(left) === getVariableValueType(right)) {
+                        comparisonMap = {
+                            ...comparisonMap,
+                            '==': () => structuralEquality(left, right),
+                            '!=': () => !structuralEquality(left, right),
+                        };
+                    }
+                    if (isVariableValueType(left, 'number') && isVariableValueType(right, 'number')) {
+                        comparisonMap = {
+                            ...comparisonMap,
+                            '<': () => left.number < right.number,
+                            '<=': () => left.number <= right.number,
+                            '>': () => left.number > right.number,
+                            '>=': () => left.number >= right.number,
+                        };
+                    }
+                    else if (isVariableValueType(left, 'string') && isVariableValueType(right, 'string')) {
+                        comparisonMap = {
+                            ...comparisonMap,
+                            'C': () => left.string.includes(right.string),
+                            '!C': () => !left.string.includes(right.string),
+                        };
+                    }
+                    else if (isVariableValueType(left, 'list')) {
+                        comparisonMap = {
+                            ...comparisonMap,
+                            'C': () => left.list.some(v => structuralEquality(v, right)),
+                            '!C': () => !left.list.some(v => structuralEquality(v, right)),
+                        };
+                    }
+                    else if (isVariableValueType(left, 'map')) {
+                        comparisonMap = {
+                            ...comparisonMap,
+                            'C': () => Object.values(left.map).some(v => structuralEquality(v, right)),
+                            '!C': () => !Object.values(left.map).some(v => structuralEquality(v, right)),
+                        };
+                    }
+                    const comparisonOp = comparisonMap[a.comparison];
+                    if (comparisonOp) {
+                        valid = comparisonOp();
+                    }
+                    else {
+                        throw new InterpreterError(project.files[a.range.file], a.range, `Variable '${a.variableID}' is a '${getVariableValueType(left)}', which cannot be compared with a '${getVariableValueType(right)}' in this way!`);
+                    }
+                    if (valid) {
+                        await runActionList(project, story, a.actions);
+                    }
+                },
+                varSet: async (a) => {
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID);
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID);
+                    updateVariableValue(story, a.variableID, right, a.characterID);
+                },
+                varAdd: async (a) => {
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID);
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID);
+                    if (isVariableValueType(left, 'number') && isVariableValueType(right, 'number')) {
+                        updateVariableValue(story, a.variableID, { number: left.number + right.number }, a.characterID);
+                    }
+                    else if (isVariableValueType(left, 'string') && isVariableValueType(right, 'string')) {
+                        updateVariableValue(story, a.variableID, { string: left.string + right.string }, a.characterID);
+                    }
+                    else if (isVariableValueType(left, 'list')) {
+                        updateVariableValue(story, a.variableID, { list: [...left.list, right] }, a.characterID);
+                    }
+                    else if (isVariableValueType(left, 'map')) {
+                        if (!a.key)
+                            throw new InterpreterError(project.files[a.range.file], a.range, `Variable '${a.variableID}' is a 'map' variable, which means any additions to it must have a text key specified!`);
+                        const key = resolveVariableValue(project, story, a.range, a.key, a.characterID);
+                        if (!isVariableValueType(key, 'string'))
+                            throw new InterpreterError(project.files[a.range.file], a.range, `Variable '${a.variableID}' is a 'map' variable, which means any additions to it must have a text key specified, but the key value had type '${getVariableValueType(key)}' instead!`);
+                        updateVariableValue(story, a.variableID, { map: { ...left.map, [key.string]: right } }, a.characterID);
+                    }
+                    else {
+                        throw new InterpreterError(project.files[a.range.file], a.range, `Variable '${a.variableID}' is a '${getVariableValueType(left)}', which cannot have a value of type '${getVariableValueType(right)}' added to it!`);
+                    }
+                },
+                varSubtract: async (a) => {
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID);
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID);
+                    if (isVariableValueType(left, 'number') && isVariableValueType(right, 'number')) {
+                        updateVariableValue(story, a.variableID, { number: left.number - right.number }, a.characterID);
+                    }
+                    else if (isVariableValueType(left, 'list')) {
+                        updateVariableValue(story, a.variableID, { list: [...left.list, right] }, a.characterID);
+                    }
+                    else if (isVariableValueType(left, 'map') && isVariableValueType(right, 'string')) {
+                        const map = { ...left.map };
+                        delete map[right.string];
+                        updateVariableValue(story, a.variableID, { map }, a.characterID);
+                    }
+                    else {
+                        throw new InterpreterError(project.files[a.range.file], a.range, `Variable '${a.variableID}' is a '${getVariableValueType(left)}', which cannot have a value of type '${getVariableValueType(right)}' subtracted from it!`);
+                    }
+                },
+            };
+            const actionFunc = actionMap[action.type];
+            if (actionFunc) {
+                await actionFunc(action);
+            }
+            else {
+                throw new InterpreterError(project.files[action.range.file], action.range, `The passage action type '${action.type}' is not yet supported!`);
+            }
+        }
+    }
+    function updateCharacterState(story, characterID, updater) {
+        updateStoryState(story, s => ({
+            ...s,
+            characters: {
+                ...s.characters,
+                [characterID]: {
+                    ...(updater((story.state.characters[characterID] ?? { expressionID: null, outfitID: null, location: 'default', variables: {} }))),
+                },
+            }
+        }));
+    }
+    function updateStoryState(story, updater) {
+        story.state = {
+            ...updater(story.state)
+        };
+    }
+    function updateVariableValue(story, variableID, newValue, characterID) {
+        if (characterID) {
+            updateCharacterState(story, characterID, c => ({
+                ...c,
+                variables: {
+                    ...c.variables,
+                    [variableID]: newValue
+                }
+            }));
+        }
+        else {
+            updateStoryState(story, s => ({
+                ...s,
+                variables: {
+                    ...s.variables,
+                    [variableID]: newValue,
+                }
+            }));
+        }
+    }
+    function getVariableValue(project, story, range, variableID, characterID) {
+        const rawValue = getVariableValueRaw(project, story, variableID, characterID);
+        if (!rawValue) {
+            throw new InterpreterError(project.files[range.file], range, `No variable named '${variableID}' is defined!`);
+        }
+        const resolvedValue = resolveVariableValue(project, story, range, rawValue, characterID);
+        return resolvedValue;
+    }
+    function resolveVariableValue(project, story, range, value, characterID) {
+        let unrollCount = 100;
+        while ((unrollCount--) > 0 && isVariableValueType(value, 'variable')) {
+            const unrolledValue = getVariableValueRaw(project, story, value.variable, characterID);
+            if (!unrolledValue) {
+                throw new InterpreterError(project.files[range.file], range, `No variable named '${value.variable}' is defined!`);
+            }
+            value = unrolledValue;
+        }
+        return value;
+    }
+    function getVariableValueRaw(project, story, variableID, characterID) {
+        if (characterID) {
+            const characterVariables = story.state.characters[characterID]?.variables;
+            if (characterVariables) {
+                const characterVariable = characterVariables[variableID];
+                if (characterVariable) {
+                    return characterVariable;
+                }
+            }
+            const characterDef = project.definition.characters[characterID];
+            if (characterDef) {
+                const characterVariableDef = characterDef.variables[variableID];
+                if (characterVariableDef) {
+                    return characterVariableDef.initialValue;
+                }
+            }
+            const castVariableDef = project.definition.variables[variableID];
+            if (castVariableDef && castVariableDef.scope === 'cast') {
+                return castVariableDef.initialValue;
+            }
+        }
+        else {
+            const globalVariable = story.state.variables[variableID];
+            if (globalVariable) {
+                return globalVariable;
+            }
+            const globalVariableDef = project.definition.variables[variableID];
+            if (globalVariableDef && globalVariableDef.scope === 'global') {
+                return globalVariableDef.initialValue;
+            }
+        }
+        return null;
+    }
+    function isVariableValueType(value, type) {
+        return getVariableValueType(value) === type;
+    }
+    function getVariableValueType(value) {
+        return Object.keys(value)[0];
+    }
+    function getVariableActualValue(value) {
+        return Object.values(value)[0];
+    }
+    function structuralEquality(left, right) {
+        if (getVariableValueType(left) !== getVariableValueType(right))
+            return false;
+        if (isVariableValueType(left, 'list') && isVariableValueType(right, 'list')) {
+            return left.list.length === right.list.length && left.list.every((a, i) => structuralEquality(a, right.list[i]));
+        }
+        else if (isVariableValueType(left, 'map') && isVariableValueType(right, 'map')) {
+            return Object.keys(left.map).length === Object.keys(right.map).length && Object.keys(left.map).every(k => structuralEquality(left.map[k], right.map[k]));
+        }
+        else {
+            return getVariableActualValue(left) === getVariableActualValue(right);
+        }
+    }
+    function pushState(story, newPassageID) {
+        story.history = [...story.history, story.state];
+        story.state = {
+            ...story.state,
+            passageID: newPassageID,
+        };
+    }
+    return {
+        runProject,
     };
 })();
 function clickTrap(e) {
     e.preventDefault();
     e.stopPropagation();
 }
-const backdrop = h("div", { className: "backdrop" });
+let currentBackdrop = h("div", { className: "backdrop" });
 const characterBounds = h("div", { id: "characterBounds" });
 const viewport = h("div", { id: "viewport" },
-    backdrop,
+    currentBackdrop,
     characterBounds);
-const menu = h("div", { id: "menu", onclick: clickTrap });
-const errorEditor = h("div", { id: "errorEditor" });
+const menu = h("div", { id: "menu", className: "closed", onclick: clickTrap });
+const errorEditor = h("div", { id: "errorEditor", className: "closed", onclick: clickTrap });
 const nameplate = h("div", { id: "nameplate" });
 const dialogue = h("div", { id: "dialogue" });
+const choiceList = h("div", { id: "choiceList" });
 const caret = h("div", { id: "caret" });
 const textbox = h("div", { id: "textbox" },
     nameplate,
     dialogue,
-    caret);
+    caret,
+    choiceList);
 const main = h("div", { id: "main" },
     viewport,
     textbox,
@@ -388,10 +672,12 @@ const MONACO = (() => {
             endColumn: e.range.end + 1,
         }));
         monaco.editor.setModelMarkers(model, LANG_ID, markers);
+        errorEditor.classList.remove('closed');
         currentEditor = monaco.editor.create(errorEditor, {
             model: model,
             theme: 'vs-dark',
         });
+        errorEditor.classList.remove('closed');
     }
     return {
         makeCodeEditor,
@@ -441,7 +727,6 @@ const PARSER = (() => {
         const text = await fileLookup(path);
         const lines = text.split(/\r?\n/g);
         const file = {
-            project,
             path,
             lines,
             tokens: [],
@@ -451,7 +736,7 @@ const PARSER = (() => {
         };
         project.files[path] = file;
         while (file.cursor.row < file.lines.length) {
-            parseLine(file);
+            parseLine(project, file);
         }
         return file;
     }
@@ -464,15 +749,16 @@ const PARSER = (() => {
     function parseKeywordSelect(file, optionMap, error) {
         const keywords = Object.keys(optionMap);
         for (const keyword of keywords) {
-            if (tryAdvance(file, peekKeyword(file, keyword))) {
-                return optionMap[keyword]();
+            const token = tryAdvance(file, peekKeyword(file, keyword));
+            if (token) {
+                return optionMap[keyword](token);
             }
         }
         const keywordList = keywords.map((v, i, a) => a.length && i === a.length - 1 ? `or '${v}'` : `'${v}'`).join(keywords.length > 2 ? ', ' : ' ');
         const token = peekAny(file);
         throw new ParseError(file, token.range, `${error} ${keywordList}, but this line has '${token.text}' instead.`);
     }
-    function parseCharacterSubDefinition(file, character, indent) {
+    function parseCharacterSubDefinition(project, file, character, indent) {
         advance(file, peekKeyword(file, 'has'), `Character sub-definitions must start with 'has'`);
         parseKeywordSelect(file, {
             outfit: () => {
@@ -489,11 +775,11 @@ const PARSER = (() => {
                 checkEndOfLine(file, `Outfit definitions must not have anything here after the outfit name`);
             },
             variable: () => {
-                parseVariableDefinition(file, 'character', character);
+                parseVariableDefinition(project, file, 'character', character);
             },
         }, `Character sub-definitions must be an`);
     }
-    function parseOutfitSubDefinition(file, character, outfit, indent) {
+    function parseOutfitSubDefinition(project, file, character, outfit, indent) {
         advance(file, peekKeyword(file, 'with'), `Outfit sub-definitions must start with 'with'`);
         parseKeywordSelect(file, {
             expression: () => {
@@ -504,21 +790,22 @@ const PARSER = (() => {
                 }
                 outfit.expressions[id] = {
                     id,
-                    path: `${file.project.path}/${character.id}/${outfit.id}/${id}.png`,
+                    path: `${project.path}/characters/${character.id}/${outfit.id}/${id}.png`,
                 };
                 checkEndOfLine(file, `Expression definitions must not have anything here after the expression name`);
             }
         }, `Outfit sub-definitions must be an`);
     }
-    function parseVariableDefinition(file, scope, character) {
+    function parseVariableDefinition(project, file, scope, character) {
         const scopeDisplay = scope.substring(0, 1).toUpperCase() + scope.substring(1);
         const varToken = advance(file, peekVariable(file), `${scopeDisplay} variable definitions must have a variable name that starts with the '$' symbol here`);
         tryAdvance(file, peekKeyword(file, 'which'));
         advance(file, peekKeyword(file, 'is'), `${scopeDisplay} variable definitions must have a default value here, starting with the word 'is'`);
         const valueToken = advance(file, peekVariableValue(file), `${scopeDisplay} variable definitions must have a default value specified here`);
         const id = varToken.text;
-        const [type, value] = processVariableValue(file, valueToken);
-        const parent = character ? character : file.project.definition;
+        const value = processVariableValue(file, valueToken);
+        const type = Object.keys(value)[0];
+        const parent = character ? character : project.definition;
         if (parent.variables[id]) {
             throw new ParseError(file, varToken.range, `Variable names must be unique, but you already have a variable named '${id}' defined elsewhere.`);
         }
@@ -531,46 +818,46 @@ const PARSER = (() => {
         };
         checkEndOfLine(file, `${scopeDisplay} variable definitions must not have anything here after the default value`);
     }
-    function parseDefinition(file, indent) {
+    function parseDefinition(project, file, indent) {
         advance(file, peekKeyword(file, 'define'), `Lines must start with 'define'`);
         parseKeywordSelect(file, {
             'global variable': () => {
-                parseVariableDefinition(file, 'global');
+                parseVariableDefinition(project, file, 'global');
             },
             'cast variable': () => {
-                parseVariableDefinition(file, 'cast');
+                parseVariableDefinition(project, file, 'cast');
             },
             character: () => {
                 const identifierToken = advance(file, peekAnyIdentifier(file), `Character definitions must have a name that starts with a letter here`);
                 advance(file, peekKeyword(file, 'as'), `Character definitions must have a name here, starting with the word 'as', like 'as "Jane"'`);
                 const nameToken = advance(file, peekString(file), `Character definitions must have a name here, contained in double-quotes, like 'as "Jane"'`);
                 const id = identifierToken.text;
-                const name = processVariableValueOfType(file, nameToken, 'string', `Character names must be enclosed in double-quotes, like '"Jane"'`);
-                if (file.project.definition.characters[id]) {
+                const name = processVariableValueOfType(file, nameToken, 'string', `Character names must be enclosed in double-quotes, like '"Jane"'`).string;
+                if (project.definition.characters[id]) {
                     throw new ParseError(file, identifierToken.range, `Character names must be unique, but you already have a character named '${id}' defined elsewhere.`);
                 }
-                file.project.definition.characters[id] = {
+                project.definition.characters[id] = {
                     id,
                     name,
                     outfits: {},
                     variables: {},
                 };
-                file.states.push({ indent: indent, character: file.project.definition.characters[id] });
+                file.states.push({ indent: indent, character: project.definition.characters[id] });
                 checkEndOfLine(file, `Character definitions must not have anything here after the name`);
             },
             backdrop: () => {
                 const identifierToken = advance(file, peekAnyIdentifier(file), `Backdrop definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
-                let path = `${file.project.path}/backdrops/${id}.png`;
+                let path = `${project.path}/backdrops/${id}.png`;
                 if (tryAdvance(file, peekKeyword(file, 'from'))) {
                     const filenameToken = advance(file, peekString(file), `Backdrop definitions must have a file path here, enclosed in double-quotes, like 'from "bg.jpg"'`);
-                    const filename = processVariableValueOfType(file, filenameToken, 'string', `Backdrop file paths must be enclosed in double-quotes, like '"bg.jpg"'`);
-                    path = `${file.project.path}/backdrops/${filename}`;
+                    const filename = processVariableValueOfType(file, filenameToken, 'string', `Backdrop file paths must be enclosed in double-quotes, like '"bg.jpg"'`).string;
+                    path = `${project.path}/backdrops/${filename}`;
                 }
-                if (file.project.definition.backdrops[id]) {
+                if (project.definition.backdrops[id]) {
                     throw new ParseError(file, identifierToken.range, `Passage names must be unique, but you already have a backdrop named '${id}' defined elsewhere.`);
                 }
-                file.project.definition.backdrops[id] = {
+                project.definition.backdrops[id] = {
                     id,
                     path,
                 };
@@ -579,16 +866,16 @@ const PARSER = (() => {
             sound: () => {
                 const identifierToken = advance(file, peekAnyIdentifier(file), `Sound definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
-                let path = `${file.project.path}/sound/${id}.mp3`;
+                let path = `${project.path}/sound/${id}.mp3`;
                 if (tryAdvance(file, peekKeyword(file, 'from'))) {
                     const filenameToken = advance(file, peekString(file), `Sound definitions must have a file path here, enclosed in double-quotes, like 'from "snd.wav"'`);
-                    const filename = processVariableValueOfType(file, filenameToken, 'string', `Sound file paths must be enclosed in double-quotes, like '"snd.wav"'`);
-                    path = `${file.project.path}/sounds/${filename}`;
+                    const filename = processVariableValueOfType(file, filenameToken, 'string', `Sound file paths must be enclosed in double-quotes, like '"snd.wav"'`).string;
+                    path = `${project.path}/sounds/${filename}`;
                 }
-                if (file.project.definition.sounds[id]) {
+                if (project.definition.sounds[id]) {
                     throw new ParseError(file, identifierToken.range, `Sound names must be unique, but you already have a sound named '${id}' defined elsewhere.`);
                 }
-                file.project.definition.sounds[id] = {
+                project.definition.sounds[id] = {
                     id,
                     path,
                 };
@@ -597,26 +884,26 @@ const PARSER = (() => {
             passage: () => {
                 const identifierToken = advance(file, peekAnyIdentifier(file), `Passage definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
-                if (file.project.definition.passages[id]) {
+                if (project.definition.passages[id]) {
                     throw new ParseError(file, identifierToken.range, `Passage names must be unique, but you already have a passage named '${id}' defined elsewhere.`);
                 }
-                file.project.definition.passages[id] = {
+                project.definition.passages[id] = {
                     id,
                     actions: [],
                 };
-                file.states.push({ indent: indent, passage: file.project.definition.passages[id] });
+                file.states.push({ indent: indent, passage: project.definition.passages[id] });
                 checkEndOfLine(file, `Passage definitions must not have anything here after the name`);
             },
         }, `Definitions must be a`);
     }
-    function parsePassageAction(file, passage, parent, indent) {
+    function parsePassageAction(project, file, passage, parent, indent) {
         const identifierToken = peekAnyIdentifier(file);
-        if (identifierToken && file.project.definition.characters[identifierToken.text]) {
+        if (identifierToken && project.definition.characters[identifierToken.text]) {
             advance(file, identifierToken, '');
-            const character = file.project.definition.characters[identifierToken.text];
+            const character = project.definition.characters[identifierToken.text];
             const characterID = character.id;
             const optionMap = {
-                enter: () => {
+                enter: t => {
                     let location = 'default';
                     if (tryAdvance(file, peekKeyword(file, 'from'))) {
                         location = parseKeywordSelect(file, {
@@ -629,10 +916,10 @@ const PARSER = (() => {
                     else {
                         checkEndOfLine(file, `Character entry actions must not have anything here after the action name unless it's the word 'from' and a location, like 'from left'`);
                     }
-                    parent.actions.push({ type: 'characterEntry', characterID, location });
+                    parent.actions.push({ type: 'characterEntry', range: getFileRange(file, t), characterID, location });
                 },
-                enters: () => optionMap.enter(),
-                exit: () => {
+                enters: t => optionMap.enter(t),
+                exit: t => {
                     let location = 'default';
                     if (tryAdvance(file, peekKeyword(file, 'to'))) {
                         location = parseKeywordSelect(file, {
@@ -645,36 +932,10 @@ const PARSER = (() => {
                     else {
                         checkEndOfLine(file, `Character exit actions must not have anything here after the action name unless it's the word 'to' and a location, like 'to left'`);
                     }
-                    parent.actions.push({ type: 'characterExit', characterID, location });
+                    parent.actions.push({ type: 'characterExit', range: getFileRange(file, t), characterID, location });
                 },
-                exits: () => optionMap.exit(),
-                say: () => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`);
-                    checkEndOfLine(file, `Character speech actions must not have anything here after the speech text`);
-                    parent.actions.push({ type: 'characterSpeech', characterID, text });
-                },
-                says: () => optionMap.say(),
-                emote: () => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character expression change actions must have an expression name here`);
-                    const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === identifierToken.text);
-                    if (!expression) {
-                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here`);
-                    }
-                    checkEndOfLine(file, `Character expression change actions must not have anything here after the expression name`);
-                    parent.actions.push({ type: 'characterExpressionChange', characterID, expressionID: expression.id });
-                },
-                emotes: () => optionMap.emote(),
-                wear: () => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character outfit change actions must have an expression name here`);
-                    const outfit = Object.values(character.outfits).find(o => o?.id === identifierToken.text);
-                    if (!outfit) {
-                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here`);
-                    }
-                    checkEndOfLine(file, `Character outfit change actions must not have anything here after the outfit name`);
-                    parent.actions.push({ type: 'characterOutfitChange', characterID, outfitID: outfit.id });
-                },
-                wears: () => optionMap.wear(),
-                move: () => {
+                exits: t => optionMap.exit(t),
+                move: t => {
                     tryAdvance(file, peekKeyword(file, 'to'));
                     const location = parseKeywordSelect(file, {
                         left: () => 'left',
@@ -682,169 +943,206 @@ const PARSER = (() => {
                         center: () => 'center',
                     }, `Character movement location must be`);
                     checkEndOfLine(file, `Character movement actions must not have anything here after the location`);
-                    parent.actions.push({ type: 'characterMove', characterID, location });
+                    parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location });
                 },
-                moves: () => optionMap.move(),
-                check: () => {
+                moves: t => optionMap.move(t),
+                say: t => {
+                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`).string;
+                    checkEndOfLine(file, `Character speech actions must not have anything here after the speech text`);
+                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text });
+                },
+                says: t => optionMap.say(t),
+                emote: t => {
+                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character expression change actions must have an expression name here`);
+                    const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === identifierToken.text);
+                    if (!expression) {
+                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here`);
+                    }
+                    checkEndOfLine(file, `Character expression change actions must not have anything here after the expression name`);
+                    parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID: expression.id });
+                },
+                emotes: t => optionMap.emote(t),
+                wear: t => {
+                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character outfit change actions must have an expression name here`);
+                    const outfit = Object.values(character.outfits).find(o => o?.id === identifierToken.text);
+                    if (!outfit) {
+                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here`);
+                    }
+                    checkEndOfLine(file, `Character outfit change actions must not have anything here after the outfit name`);
+                    parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID: outfit.id });
+                },
+                wears: t => optionMap.wear(t),
+                check: t => {
                     advance(file, peekKeyword(file, 'if'), `Character check actions must start with the word 'if' here`);
                     const variableToken = advance(file, peekVariable(file), `Character check actions must have a variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? file.project.definition.variables[variableID];
+                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
                         throw new ParseError(file, variableToken.range, `Character check actions must have a defined character or cast variable name here`);
                     }
                     const comparison = parseComparison(file, `Character check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character check actions must have a value specified here to compare against`));
                     checkEndOfLine(file, `Character check actions must not have anything here after the value`);
-                    const checkAction = { type: 'check', variableID, comparison, value, actions: [], characterID };
+                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID };
                     parent.actions.push(checkAction);
                     file.states.push({ indent, passage, actionContainer: checkAction });
                 },
-                checks: () => optionMap.check(),
-                set: () => {
+                checks: t => optionMap.check(t),
+                set: t => {
                     const variableToken = advance(file, peekVariable(file), `Character set actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? file.project.definition.variables[variableID];
+                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
                         throw new ParseError(file, variableToken.range, `Character set actions must have a defined global variable name here`);
                     }
                     advance(file, peekKeyword(file, 'to'), `Character set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character set actions must have a value specified here to store in the variable`));
                     checkEndOfLine(file, `Character set actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSet', variableID, value, characterID });
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID });
                 },
-                add: () => {
+                sets: t => optionMap.set(t),
+                add: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character add actions must have a value specified here to add to the variable`));
                     advance(file, peekKeyword(file, 'to'), `Character add actions must have the word 'to' here`);
                     const variableToken = advance(file, peekVariable(file), `Character add actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? file.project.definition.variables[variableID];
+                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
                         throw new ParseError(file, variableToken.range, `Character add actions must have a defined global variable name here`);
                     }
+                    let key = undefined;
+                    if (variable.type === 'map') {
+                        advance(file, peekKeyword(file, 'as'), `Character add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`);
+                        key = processVariableValue(file, advance(file, peekVariableValue(file), `Character add actions must have a key name here after the word 'as', like 'as "foo"'`));
+                    }
                     checkEndOfLine(file, `Character add actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varAdd', variableID, value, characterID });
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID });
                 },
-                adds: () => optionMap.add(),
-                subtract: () => {
+                adds: t => optionMap.add(t),
+                subtract: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character subtract actions must have a value specified here to subtract from the variable`));
                     advance(file, peekKeyword(file, 'from'), `Character subtract actions must have the word 'form' here`);
                     const variableToken = advance(file, peekVariable(file), `Character subtract actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? file.project.definition.variables[variableID];
+                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
                         throw new ParseError(file, variableToken.range, `Character subtract actions must have a defined global variable name here`);
                     }
                     checkEndOfLine(file, `Character subtract actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSubtract', variableID, value, characterID });
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID });
                 },
-                subtracts: () => optionMap.subtract(),
+                subtracts: t => optionMap.subtract(t),
             };
             parseKeywordSelect(file, optionMap, `Character actions must be`);
         }
         else {
             parseKeywordSelect(file, {
-                display: () => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Display actions must have a backdrop name here`);
-                    const backdrop = file.project.definition.backdrops[identifierToken.text];
-                    if (!backdrop) {
-                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here`);
-                    }
-                    checkEndOfLine(file, `Display actions must not have anything here after the backdrop name`);
-                    parent.actions.push({ type: 'backdropChange', backdropID: backdrop.id });
-                },
-                play: () => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Play Sound actions must have a sound name here`);
-                    const sound = file.project.definition.sounds[identifierToken.text];
-                    if (!sound) {
-                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here`);
-                    }
-                    checkEndOfLine(file, `Play Sound actions must not have anything here after the sound name`);
-                    parent.actions.push({ type: 'playSound', soundID: sound.id });
-                },
-                narrate: () => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`);
-                    checkEndOfLine(file, `Narration actions must not have anything here after the narration text`);
-                    parent.actions.push({ type: 'narration', text });
-                },
-                option: () => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Passage options must have the text to display here, enclosed in double-quotes, like '"Pick Me"'`), 'string', `Passage option text must be enclosed in double-quotes, like '"Pick Me"'`);
-                    checkEndOfLine(file, `Passage options must not have anything here after the option text`);
-                    const optionDefinition = { type: 'option', text, actions: [] };
-                    parent.actions.push(optionDefinition);
-                    file.states.push({ indent, passage, actionContainer: optionDefinition });
-                },
-                continue: () => {
+                continue: t => {
                     checkEndOfLine(file, `Continuation options must not have anything here after 'continue'`);
-                    parent.actions.push({ type: 'continue' });
+                    parent.actions.push({ type: 'continue', range: getFileRange(file, t) });
                 },
-                'go to': () => {
+                'go to': t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file), `Go-To actions must have a passage name here`);
                     const passageID = identifierToken.text;
-                    // Passages are likely going to be defined later in the file, so don't try to resolve them immediately
+                    // Target passages are typically going to be defined later in the file, so don't try to resolve them immediately
                     if (false) {
-                        const passage = file.project.definition.passages[passageID];
+                        const passage = project.definition.passages[passageID];
                         if (!passage) {
                             throw new ParseError(file, identifierToken.range, `Go-To actions must have a defined passage name here`);
                         }
                     }
                     checkEndOfLine(file, `Go-To actions must not have anything here after the passage name`);
-                    parent.actions.push({ type: 'goto', passageID });
+                    parent.actions.push({ type: 'goto', range: getFileRange(file, t), passageID });
                 },
-                end: () => {
+                end: t => {
                     checkEndOfLine(file, `Ending options must not have anything here after 'end'`);
-                    parent.actions.push({ type: 'end' });
+                    parent.actions.push({ type: 'end', range: getFileRange(file, t) });
                 },
-                check: () => {
+                display: t => {
+                    const identifierToken = advance(file, peekAnyIdentifier(file), `Display actions must have a backdrop name here`);
+                    const backdrop = project.definition.backdrops[identifierToken.text];
+                    if (!backdrop) {
+                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here`);
+                    }
+                    checkEndOfLine(file, `Display actions must not have anything here after the backdrop name`);
+                    parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID: backdrop.id });
+                },
+                play: t => {
+                    const identifierToken = advance(file, peekAnyIdentifier(file), `Play Sound actions must have a sound name here`);
+                    const sound = project.definition.sounds[identifierToken.text];
+                    if (!sound) {
+                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here`);
+                    }
+                    checkEndOfLine(file, `Play Sound actions must not have anything here after the sound name`);
+                    parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID: sound.id });
+                },
+                narrate: t => {
+                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`).string;
+                    checkEndOfLine(file, `Narration actions must not have anything here after the narration text`);
+                    parent.actions.push({ type: 'narration', range: getFileRange(file, t), text });
+                },
+                option: t => {
+                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Passage options must have the text to display here, enclosed in double-quotes, like '"Pick Me"'`), 'string', `Passage option text must be enclosed in double-quotes, like '"Pick Me"'`).string;
+                    checkEndOfLine(file, `Passage options must not have anything here after the option text`);
+                    const optionDefinition = { type: 'option', range: getFileRange(file, t), text, actions: [] };
+                    parent.actions.push(optionDefinition);
+                    file.states.push({ indent, passage, actionContainer: optionDefinition });
+                },
+                check: t => {
                     advance(file, peekKeyword(file, 'if'), `Check actions must start with the word 'if' here`);
                     const variableToken = advance(file, peekVariable(file), `Check actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = file.project.definition.variables[variableID];
+                    const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
                         throw new ParseError(file, variableToken.range, `Check actions must have a defined global variable name here`);
                     }
                     const comparison = parseComparison(file, `Check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Check actions must have a value specified here to compare against`));
                     checkEndOfLine(file, `Check actions must not have anything here after the value`);
-                    const checkAction = { type: 'check', variableID, comparison, value, actions: [] };
+                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID: null };
                     parent.actions.push(checkAction);
                     file.states.push({ indent, passage, actionContainer: checkAction });
                 },
-                set: () => {
+                set: t => {
                     const variableToken = advance(file, peekVariable(file), `Set actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = file.project.definition.variables[variableID];
+                    const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
                         throw new ParseError(file, variableToken.range, `Set actions must have a defined global variable name here`);
                     }
                     advance(file, peekKeyword(file, 'to'), `Set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Set actions must have a value specified here to store in the variable`));
                     checkEndOfLine(file, `Set actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSet', variableID, value });
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID: null });
                 },
-                add: () => {
+                add: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a value specified here to add to the variable`));
                     advance(file, peekKeyword(file, 'to'), `Add actions must have the word 'to' here`);
                     const variableToken = advance(file, peekVariable(file), `Add actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = file.project.definition.variables[variableID];
+                    const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
                         throw new ParseError(file, variableToken.range, `Add actions must have a defined global variable name here`);
                     }
+                    let key = undefined;
+                    if (variable.type === 'map') {
+                        advance(file, peekKeyword(file, 'as'), `Add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`);
+                        key = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a key name here after the word 'as', like 'as "foo"'`));
+                    }
                     checkEndOfLine(file, `Add actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varAdd', variableID, value });
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, characterID: null });
                 },
-                subtract: () => {
+                subtract: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Subtract actions must have a value specified here to subtract from the variable`));
                     advance(file, peekKeyword(file, 'from'), `Subtract actions must have the word 'from' here`);
                     const variableToken = advance(file, peekVariable(file), `Subtract actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = file.project.definition.variables[variableID];
+                    const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
                         throw new ParseError(file, variableToken.range, `Subtract actions must have a defined global variable name here`);
                     }
                     checkEndOfLine(file, `Subtract actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSubtract', variableID, value });
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null });
                 },
             }, `Passage actions must start with a defined character's name or be`);
         }
@@ -866,7 +1164,7 @@ const PARSER = (() => {
         }, error);
         return comparison;
     }
-    function parseLine(file) {
+    function parseLine(project, file) {
         if (!file.lines[file.cursor.row].trim().length) {
             file.cursor.row++;
             file.cursor.col = 0;
@@ -879,19 +1177,19 @@ const PARSER = (() => {
         const currentState = file.states.length ? file.states[file.states.length - 1] : null;
         try {
             if (currentState?.actionContainer && currentState.passage) {
-                parsePassageAction(file, currentState.passage, currentState.actionContainer, indent);
+                parsePassageAction(project, file, currentState.passage, currentState.actionContainer, indent);
             }
             else if (currentState?.passage) {
-                parsePassageAction(file, currentState.passage, currentState.passage, indent);
+                parsePassageAction(project, file, currentState.passage, currentState.passage, indent);
             }
             else if (currentState?.character && !currentState.outfit) {
-                parseCharacterSubDefinition(file, currentState.character, indent);
+                parseCharacterSubDefinition(project, file, currentState.character, indent);
             }
             else if (currentState?.outfit && currentState.character) {
-                parseOutfitSubDefinition(file, currentState.character, currentState.outfit, indent);
+                parseOutfitSubDefinition(project, file, currentState.character, currentState.outfit, indent);
             }
             else {
-                parseDefinition(file, indent);
+                parseDefinition(project, file, indent);
             }
         }
         catch (e) {
@@ -1095,31 +1393,35 @@ const PARSER = (() => {
     }
     function processVariableValue(file, token) {
         if (token.type === 'string')
-            return ['string', JSON.parse(token.text)];
+            return { string: JSON.parse(token.text) };
         else if (token.type === 'number')
-            return ['number', JSON.parse(token.text)];
+            return { number: JSON.parse(token.text) };
         else if (token.type === 'variable')
-            return ['variable', { $: token.text }];
+            return { variable: token.text };
         else if (token.type === 'identifier') {
             if (token.text === 'yes')
-                return ['boolean', true];
+                return { boolean: true };
             else if (token.text === 'no')
-                return ['boolean', false];
+                return { boolean: false };
             else if (token.text === 'nothing')
-                return ['null', null];
+                return { null: null };
             else if (token.text === 'a list')
-                return ['list', []];
+                return { list: [] };
             else if (token.text === 'a map')
-                return ['map', {}];
+                return { map: {} };
         }
         throw new ParseError(file, token.range, `Could not determine the value of this expression: '${token.text}'`);
     }
     function processVariableValueOfType(file, token, type, error) {
-        const [actualType, value] = processVariableValue(file, token);
+        const value = processVariableValue(file, token);
+        const actualType = Object.keys(value)[0];
         if (actualType !== type) {
             throw new ParseError(file, token.range, `${error}, but this line has '${token.text}'.`);
         }
         return value;
+    }
+    function getFileRange(file, token) {
+        return { file: file.path, row: token.range.row, start: token.range.start, end: token.range.end };
     }
     return {
         parseStory,
@@ -1135,6 +1437,18 @@ class ParseError extends Error {
         this.range = range;
         this.msg = msg;
         this.name = 'ParseError';
+    }
+}
+class InterpreterError extends Error {
+    file;
+    range;
+    msg;
+    constructor(file, range, msg) {
+        super(`An error was identified while processing a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`);
+        this.file = file;
+        this.range = range;
+        this.msg = msg;
+        this.name = 'InterpreterError';
     }
 }
 function h(tag, props, ...children) {
