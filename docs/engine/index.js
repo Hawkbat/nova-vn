@@ -7,20 +7,11 @@ const NETWORK_LOADER = async (path) => {
     const text = await response.text();
     return text;
 };
-async function loadProject(projectPath, loader) {
-    const story = await PARSER.parseStory(projectPath, `${projectPath}/story.nvn`, loader);
-    for (const file of Object.values(story.files)) {
-        if (file?.errors.length) {
-            MONACO.makeCodeEditor(file);
-        }
-    }
-    return story;
-}
 requestAnimationFrame(async () => {
     let project = null;
     if (!project) {
         try {
-            project = await loadProject('project', NETWORK_LOADER);
+            project = await PARSER.parseStory('project', NETWORK_LOADER);
         }
         catch (e) {
             if (String(e).includes('Failed to fetch project file')) {
@@ -32,9 +23,14 @@ requestAnimationFrame(async () => {
         }
     }
     if (!project) {
-        project = await loadProject('engine/docs_project', NETWORK_LOADER);
+        project = await PARSER.parseStory('engine/docs_project', NETWORK_LOADER);
     }
     try {
+        for (const file of Object.values(project.files)) {
+            if (file?.errors.length) {
+                MONACO.makeCodeEditor(file);
+            }
+        }
         await INTERPRETER.runProject(project);
     }
     catch (e) {
@@ -66,7 +62,6 @@ const INTERFACE = (() => {
         currentBackdrop = newElement;
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling);
         newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent';
-        console.log(oldElement, newElement);
         setTimeout(() => {
             oldElement.remove();
         }, BACKDROP_HIDE_DURATION);
@@ -720,7 +715,7 @@ const NATIVE = (() => {
 const PARSER = (() => {
     // The default in OSX TextEdit and Windows Notepad; editors where it's configurable usually can just normalize on spaces or tabs
     const TABS_TO_SPACES = 8;
-    async function parseStory(projectPath, mainFilePath, fileLookup) {
+    async function parseStory(projectPath, fileLookup) {
         const project = {
             definition: {
                 characters: {},
@@ -732,6 +727,7 @@ const PARSER = (() => {
             path: projectPath,
             files: {},
         };
+        const mainFilePath = `${projectPath}/story.nvn`;
         await parseFile(project, mainFilePath, fileLookup);
         return project;
     }
@@ -748,7 +744,7 @@ const PARSER = (() => {
         };
         project.files[path] = file;
         while (file.cursor.row < file.lines.length) {
-            parseLine(project, file);
+            await parseLine(project, file, fileLookup);
         }
         return file;
     }
@@ -831,7 +827,6 @@ const PARSER = (() => {
         checkEndOfLine(file, `${scopeDisplay} variable definitions must not have anything here after the default value`);
     }
     function parseDefinition(project, file, indent) {
-        advance(file, peekKeyword(file, 'define'), `Lines must start with 'define'`);
         parseKeywordSelect(file, {
             'global variable': () => {
                 parseVariableDefinition(project, file, 'global');
@@ -1176,7 +1171,13 @@ const PARSER = (() => {
         }, error);
         return comparison;
     }
-    function parseLine(project, file) {
+    async function parseInclude(project, file, fileLookup) {
+        const pathToken = advance(file, peekString(file), `Include directives must have a file path here, enclosed in double-quotes, like '"chapter1.nvn"'`);
+        const path = processVariableValueOfType(file, pathToken, 'string', `Include directive file paths must be enclosed in double-quotes, like '"chapter1.nvn"'`).string;
+        const fullPath = `${project.path}/${path}`;
+        await parseFile(project, fullPath, fileLookup);
+    }
+    async function parseLine(project, file, fileLookup) {
         if (!file.lines[file.cursor.row].trim().length) {
             file.cursor.row++;
             file.cursor.col = 0;
@@ -1201,7 +1202,13 @@ const PARSER = (() => {
                 parseOutfitSubDefinition(project, file, currentState.character, currentState.outfit, indent);
             }
             else {
-                parseDefinition(project, file, indent);
+                let includePromise = null;
+                parseKeywordSelect(file, {
+                    define: () => parseDefinition(project, file, indent),
+                    include: () => includePromise = parseInclude(project, file, fileLookup),
+                }, `Lines must start with`);
+                if (includePromise)
+                    await includePromise;
             }
         }
         catch (e) {

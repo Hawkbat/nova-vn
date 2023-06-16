@@ -3,7 +3,7 @@ const PARSER = (() => {
     // The default in OSX TextEdit and Windows Notepad; editors where it's configurable usually can just normalize on spaces or tabs
     const TABS_TO_SPACES = 8
 
-    async function parseStory(projectPath: string, mainFilePath: string, fileLookup: (path: string) => Promise<string>) {
+    async function parseStory(projectPath: string, fileLookup: (path: string) => Promise<string>) {
         const project: ProjectContext = {
             definition: {
                 characters: {},
@@ -15,6 +15,7 @@ const PARSER = (() => {
             path: projectPath,
             files: {},
         }
+        const mainFilePath = `${projectPath}/story.nvn`
         await parseFile(project, mainFilePath, fileLookup)
         return project
     }
@@ -32,7 +33,7 @@ const PARSER = (() => {
         }
         project.files[path] = file
         while (file.cursor.row < file.lines.length) {
-            parseLine(project, file)
+            await parseLine(project, file, fileLookup)
         }
         return file
     }
@@ -121,7 +122,6 @@ const PARSER = (() => {
     }
 
     function parseDefinition(project: ProjectContext, file: FileContext, indent: number) {
-        advance(file, peekKeyword(file, 'define'), `Lines must start with 'define'`)
         parseKeywordSelect(file, {
             'global variable': () => {
                 parseVariableDefinition(project, file, 'global')
@@ -466,7 +466,14 @@ const PARSER = (() => {
         return comparison
     }
 
-    function parseLine(project: ProjectContext, file: FileContext) {
+    async function parseInclude(project: ProjectContext, file: FileContext, fileLookup: (path: string) => Promise<string>) {
+        const pathToken = advance(file, peekString(file), `Include directives must have a file path here, enclosed in double-quotes, like '"chapter1.nvn"'`)
+        const path = processVariableValueOfType(file, pathToken, 'string', `Include directive file paths must be enclosed in double-quotes, like '"chapter1.nvn"'`).string
+        const fullPath = `${project.path}/${path}`
+        await parseFile(project, fullPath, fileLookup)
+    }
+
+    async function parseLine(project: ProjectContext, file: FileContext, fileLookup: (path: string) => Promise<string>) {
         if (!file.lines[file.cursor.row].trim().length) {
             file.cursor.row++
             file.cursor.col = 0
@@ -487,7 +494,12 @@ const PARSER = (() => {
             } else if (currentState?.outfit && currentState.character) {
                 parseOutfitSubDefinition(project, file, currentState.character, currentState.outfit, indent)
             } else {
-                parseDefinition(project, file, indent)
+                let includePromise: Promise<void> | null = null
+                parseKeywordSelect(file, {
+                    define: () => parseDefinition(project, file, indent),
+                    include: () => includePromise = parseInclude(project, file, fileLookup),
+                }, `Lines must start with`)
+                if (includePromise) await includePromise
             }
         } catch (e) {
             if (e instanceof ParseError) {

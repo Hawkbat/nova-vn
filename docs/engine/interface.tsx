@@ -21,7 +21,6 @@ const INTERFACE = (() => {
         currentBackdrop = newElement
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling)
         newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent'
-        console.log(oldElement, newElement)
     
         setTimeout(() => {
             oldElement.remove()
