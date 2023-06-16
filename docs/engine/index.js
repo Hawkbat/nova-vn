@@ -1,13 +1,14 @@
 "use strict";
-async function loadProject(projectPath) {
-    const story = await PARSER.parseStory(projectPath, `${projectPath}/story.nvn`, async (path) => {
-        const response = await fetch(path);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch project file ${path}`);
-        }
-        const text = await response.text();
-        return text;
-    });
+const NETWORK_LOADER = async (path) => {
+    const response = await fetch(path);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch project file ${path}`);
+    }
+    const text = await response.text();
+    return text;
+};
+async function loadProject(projectPath, loader) {
+    const story = await PARSER.parseStory(projectPath, `${projectPath}/story.nvn`, loader);
     for (const file of Object.values(story.files)) {
         if (file?.errors.length) {
             MONACO.makeCodeEditor(file);
@@ -16,18 +17,22 @@ async function loadProject(projectPath) {
     return story;
 }
 requestAnimationFrame(async () => {
-    let project;
-    try {
-        project = await loadProject('project');
+    let project = null;
+    if (!project) {
+        try {
+            project = await loadProject('project', NETWORK_LOADER);
+        }
+        catch (e) {
+            if (String(e).includes('Failed to fetch project file')) {
+                console.warn(`Unable to load project file; falling back to showing the docs project`);
+            }
+            else {
+                throw e;
+            }
+        }
     }
-    catch (e) {
-        if (String(e).includes('Failed to fetch project file')) {
-            console.warn(`Unable to load project file; falling back to showing the docs project`);
-            project = await loadProject('engine/docs_project');
-        }
-        else {
-            throw e;
-        }
+    if (!project) {
+        project = await loadProject('engine/docs_project', NETWORK_LOADER);
     }
     try {
         await INTERPRETER.runProject(project);
@@ -649,6 +654,7 @@ const MONACO = (() => {
             currentEditor.dispose();
             currentEditor = null;
         }
+        currentFile = file;
         const uri = monaco.Uri.parse(file.path);
         const value = file.lines.join('\n');
         const model = monaco.editor.createModel(value, LANG_ID, uri);
@@ -686,11 +692,13 @@ const MONACO = (() => {
 /// <reference path="../../node_modules/neutralinojs-types/index.d.ts" />
 const NATIVE = (() => {
     const enabled = 'NL_VERSION' in window;
+    let initialized = false;
     let loadingPromise = createExposedPromise();
     if (enabled) {
         console.log('Detected Neutralino');
         Neutralino.init();
         Neutralino.events.on('ready', () => {
+            initialized = true;
             loadingPromise.resolve();
             console.log('Neutralino Initialized');
         });
@@ -701,8 +709,12 @@ const NATIVE = (() => {
     function isEnabled() {
         return enabled;
     }
+    async function waitForInitialize() {
+        await loadingPromise;
+    }
     return {
         isEnabled,
+        waitForInitialize,
     };
 })();
 const PARSER = (() => {

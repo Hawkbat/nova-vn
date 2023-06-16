@@ -7,7 +7,7 @@
     "tsbuild": "npx tsc",
     "tsbuild:watch": "npx tsc -w",
     "run": "npx neu run",
-    "build": "npm run tsbuild && npx neu build --release"
+    "build": "node build.js"
   },
   "author": "Nova",
   "license": "MIT",

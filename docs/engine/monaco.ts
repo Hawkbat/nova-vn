@@ -43,6 +43,8 @@ const MONACO = (() => {
             currentEditor = null
         }
 
+        currentFile = file
+
         const uri = monaco.Uri.parse(file.path)
         const value = file.lines.join('\n')
         const model = monaco.editor.createModel(value, LANG_ID, uri)

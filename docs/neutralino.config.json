@@ -2,7 +2,7 @@
   "applicationId": "nova.vn",
   "version": "1.0.0",
   "defaultMode": "window",
-  "documentRoot": "/docs/",
+  "documentRoot": "/",
   "url": "/",
   "enableServer": true,
   "enableNativeAPI": true,
@@ -21,16 +21,15 @@
       "height": 540,
       "minWidth": 384,
       "minHeight": 216,
-      "icon": "/docs/favicon.png",
-      "enableInspector": true,
+      "icon": "/favicon.png",
       "exitProcessOnClose": true
     }
   },
   "cli": {
     "binaryName": "nova-vn",
-    "resourcesPath": "/docs/",
+    "resourcesPath": "/",
     "extensionsPath": "/extensions/",
-    "clientLibrary": "/docs/engine/neutralino.js",
+    "clientLibrary": "/engine/neutralino.js",
     "binaryVersion": "4.12.0",
     "clientVersion": "3.10.0"
   }
