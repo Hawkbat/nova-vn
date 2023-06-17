@@ -12,7 +12,15 @@ const INTERFACE = (() => {
     let advancePromise: ExposedPromise<void> | null = null
 
     async function reset() {
-        
+        changeBackdrop(null)
+        for (const el of Object.values(characterElements)) {
+            if (el) {
+                el.remove()
+            }
+        }
+        nameplate.textContent = ''
+        dialogue.textContent = ''
+        choiceList.innerHTML = ''
     }
     
     async function changeBackdrop(backdrop: BackdropDefinition | null) {
