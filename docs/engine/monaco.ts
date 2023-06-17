@@ -7,7 +7,7 @@ const MONACO = (() => {
     let currentFile: FileContext | null = null
     let currentEditor: monaco.editor.IStandaloneCodeEditor | null = null
     
-    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.26.1/min/vs' }})
+    require.config({ paths: { 'vs': 'engine/monaco-editor' }})
     
     require(["vs/editor/editor.main"], () => {
         monaco.languages.register({ id: LANG_ID })

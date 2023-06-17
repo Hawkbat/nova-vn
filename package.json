@@ -13,6 +13,7 @@
   "license": "MIT",
   "devDependencies": {
     "@neutralinojs/neu": "^9.6.0",
+    "get-google-fonts": "^1.2.2",
     "monaco-editor": "^0.39.0",
     "neutralinojs-types": "^2.0.0",
     "typescript": "^5.1.3"

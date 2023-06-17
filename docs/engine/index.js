@@ -55,6 +55,15 @@ const INTERFACE = (() => {
     let textRevealPromise = null;
     let advancePromise = null;
     async function reset() {
+        changeBackdrop(null);
+        for (const el of Object.values(characterElements)) {
+            if (el) {
+                el.remove();
+            }
+        }
+        nameplate.textContent = '';
+        dialogue.textContent = '';
+        choiceList.innerHTML = '';
     }
     async function changeBackdrop(backdrop) {
         const oldElement = currentBackdrop;
@@ -618,7 +627,7 @@ const MONACO = (() => {
     let loadingPromise = createExposedPromise();
     let currentFile = null;
     let currentEditor = null;
-    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.26.1/min/vs' } });
+    require.config({ paths: { 'vs': 'engine/monaco-editor' } });
     require(["vs/editor/editor.main"], () => {
         monaco.languages.register({ id: LANG_ID });
         const tokenizerState = { clone: () => tokenizerState, equals: () => true };

@@ -12,4 +12,9 @@ neutralino.js
 .storage
 *.log
 
+# Pulled from CDN or NPM
+/docs/engine/fonts/
+/docs/engine/monaco-editor/
+
+# User-provided files
 /docs/project/
