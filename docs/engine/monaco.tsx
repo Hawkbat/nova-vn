@@ -2,7 +2,7 @@
 
 const MONACO = (() => {
     const LANG_ID = 'nova-vn'
-    const SAVE_DELAY = 1000
+    const SAVE_DELAY = 500
 
     let loadingPromise = createExposedPromise<void>()
     let currentFile: FileContext | null = null
@@ -79,8 +79,8 @@ const MONACO = (() => {
         currentFile = file
         fileListItems[file.path]?.classList.add('selected')
         setDiagnosticMarkers(file, currentEditor)
-        const model: any = currentEditor.getModel()!
-        model.tokenization.resetTokenization()
+        const model: any = currentEditor.getModel()
+        model?.tokenization.resetTokenization()
     }
     
     async function makeCodeEditor(project: ProjectContext, file: FileContext, range: ParseRange | null) {

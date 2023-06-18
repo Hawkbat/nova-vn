@@ -164,11 +164,11 @@ html, body {
 }
 
 .file:hover {
-    background: #777;
+    background: #444;
 }
 
 .file.selected {
-    background: #aaa;
+    background: #777;
 }
 
 #codePane {

@@ -93,6 +93,7 @@ type PassageAction = ({
 } | {
     type: 'goto'
     passageID: string
+    passageRange: FileRange
 } | {
     type: 'end'
 } | {

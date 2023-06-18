@@ -17,6 +17,7 @@ const PARSER = (() => {
         }
         const mainFilePath = `${projectPath}/story.nvn`
         await parseFile(project, mainFilePath, fileLookup)
+        await validateStory(project)
         return project
     }
 
@@ -36,6 +37,47 @@ const PARSER = (() => {
             await parseLine(project, file, fileLookup)
         }
         return file
+    }
+
+    async function validateStory(project: ProjectContext) {
+        for (const passage of Object.values(project.definition.passages)) {
+            if (!passage) continue
+            await validateActionList(project, passage.actions)
+        }
+    }
+
+    async function validateActionList(project: ProjectContext, actions: PassageAction[]) {
+        for (const action of actions) {
+            await validateAction(project, action)
+        }
+    }
+
+    async function validateAction(project: ProjectContext, action: PassageAction) {
+        const file = project.files[action.range.file]!
+        try {
+            const validationMap: Partial<{ [K in PassageActionType]: (action: PassageActionOfType<K>) => Promise<void> }> = {
+                goto: async a => {
+                    const passage = project.definition.passages[a.passageID]
+                    if (!passage) {
+                        throw new ParseError(file, a.passageRange, `Go-To actions must have a valid passage name here, but the passage specified here does not exist`)
+                    }
+                },
+                check: async a => {
+                    await validateActionList(project, a.actions)
+                },
+                option: async a => {
+                    await validateActionList(project, a.actions)
+                },
+            }
+            const validationFunc = validationMap[action.type]
+            if (validationFunc) await validationFunc(action as any)
+        } catch (e) {
+            if (e instanceof ParseError) {
+                file.errors.push(e)
+            } else {
+                throw e
+            }
+        }
     }
 
     function checkEndOfLine(file: FileContext, error: string) {
@@ -345,14 +387,8 @@ const PARSER = (() => {
                     const identifierToken = advance(file, peekAnyIdentifier(file), `Go-To actions must have a passage name here`)
                     const passageID = identifierToken.text
                     // Target passages are typically going to be defined later in the file, so don't try to resolve them immediately
-                    if (false) {
-                        const passage = project.definition.passages[passageID]
-                        if (!passage) {
-                            throw new ParseError(file, identifierToken.range, `Go-To actions must have a defined passage name here`)
-                        }
-                    }
                     checkEndOfLine(file, `Go-To actions must not have anything here after the passage name`)
-                    parent.actions.push({ type: 'goto', range: getFileRange(file, t), passageID })
+                    parent.actions.push({ type: 'goto', range: getFileRange(file, t), passageID, passageRange: getFileRange(file, identifierToken) })
                 },
                 end: t => {
                     checkEndOfLine(file, `Ending options must not have anything here after 'end'`)
