@@ -138,13 +138,42 @@ html, body {
     z-index: 300;
 }
 
-#errorEditor {
+#codeEditor {
     position: absolute;
     top: 20px;
     left: 20px;
     bottom: 20px;
     right: 20px;
+    display: flex;
+    background: #222;
     z-index: 400;
+}
+
+#codeFiles {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    flex: 0 0 auto;
+}
+
+.file {
+    color: white;
+    background: #333;
+    font-size: 12px;
+    padding: 5px 10px;
+}
+
+.file:hover {
+    background: #777;
+}
+
+.file.selected {
+    background: #aaa;
+}
+
+#codePane {
+    height: 100%;
+    flex: 1 1 0;
 }
 
 .backdrop {
@@ -204,7 +233,7 @@ html, body {
 }
 
 .closed {
-    display: none;
+    display: none !important;
 }
 
 @keyframes fadeIn {

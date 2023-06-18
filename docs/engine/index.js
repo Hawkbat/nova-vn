@@ -26,9 +26,10 @@ requestAnimationFrame(async () => {
         project = await PARSER.parseStory('engine/docs_project', NETWORK_LOADER);
     }
     try {
+        await MONACO.makeFileList(project);
         for (const file of Object.values(project.files)) {
             if (file?.errors.length) {
-                MONACO.makeCodeEditor(file);
+                MONACO.makeCodeEditor(project, file, file.errors[0].range);
             }
         }
         await INTERPRETER.runProject(project);
@@ -37,7 +38,7 @@ requestAnimationFrame(async () => {
         if (e instanceof ParseError || e instanceof InterpreterError) {
             console.error(e);
             e.file.errors.push(e);
-            MONACO.makeCodeEditor(e.file);
+            MONACO.makeCodeEditor(project, e.file, e.range);
         }
         else {
             throw e;
@@ -61,14 +62,14 @@ const INTERFACE = (() => {
                 el.remove();
             }
         }
-        nameplate.textContent = '';
-        dialogue.textContent = '';
-        choiceList.innerHTML = '';
+        MARKUP.nameplate.textContent = '';
+        MARKUP.dialogue.textContent = '';
+        MARKUP.choiceList.innerHTML = '';
     }
     async function changeBackdrop(backdrop) {
-        const oldElement = currentBackdrop;
-        const newElement = currentBackdrop.cloneNode();
-        currentBackdrop = newElement;
+        const oldElement = MARKUP.currentBackdrop;
+        const newElement = MARKUP.currentBackdrop.cloneNode();
+        MARKUP.currentBackdrop = newElement;
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling);
         newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent';
         setTimeout(() => {
@@ -81,7 +82,7 @@ const INTERFACE = (() => {
     async function addCharacter(character, outfit, expression, location) {
         const element = h("div", { className: "character" });
         element.style.backgroundImage = `url(${expression.path})`;
-        characterBounds.append(element);
+        MARKUP.characterBounds.append(element);
         characterElements[character.id] = element;
     }
     async function removeCharacter(character, location) {
@@ -115,20 +116,20 @@ const INTERFACE = (() => {
         const skipPromise = createExposedPromise();
         textRevealPromise = skipPromise;
         if (speaker) {
-            nameplate.textContent = speaker;
-            nameplate.classList.remove('hide');
+            MARKUP.nameplate.textContent = speaker;
+            MARKUP.nameplate.classList.remove('hide');
         }
         else {
-            nameplate.classList.add('hide');
+            MARKUP.nameplate.classList.add('hide');
         }
-        dialogue.textContent = '';
-        caret.classList.add('hide');
+        MARKUP.dialogue.textContent = '';
+        MARKUP.caret.classList.add('hide');
         const parts = text.split(/\b/g);
         for (const part of parts) {
             for (const char of part) {
                 await Promise.any([skipPromise, waitForNextFrame()]);
                 const span = h("span", null, char);
-                dialogue.append(span);
+                MARKUP.dialogue.append(span);
                 Promise.any([skipPromise, wait(TEXT_HIDE_DURATION)]).then(() => {
                     const textNode = document.createTextNode(char);
                     span.replaceWith(textNode);
@@ -147,13 +148,13 @@ const INTERFACE = (() => {
         if (textRevealPromise === skipPromise) {
             textRevealPromise.resolve();
             textRevealPromise = null;
-            caret.classList.remove('hide');
+            MARKUP.caret.classList.remove('hide');
         }
         await INTERFACE.waitForAdvance();
     }
     async function presentChoice(options) {
         const promise = createExposedPromise();
-        caret.classList.add('hide');
+        MARKUP.caret.classList.add('hide');
         let choiceElements = options.map(o => h("div", { className: "choice", onclick: e => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -161,7 +162,7 @@ const INTERFACE = (() => {
                 promise.resolve(o);
             } }, o.text));
         for (const el of choiceElements) {
-            choiceList.append(el);
+            MARKUP.choiceList.append(el);
         }
         const chosenOption = await promise;
         for (const el of choiceElements) {
@@ -222,7 +223,30 @@ const INTERFACE = (() => {
         srcNode.start();
     }
     requestAnimationFrame(() => {
-        main.addEventListener('click', clickAdvance);
+        MARKUP.main.addEventListener('click', clickAdvance);
+        window.addEventListener('keydown', e => {
+            let isHandled = true;
+            if (e.key === 'Escape') {
+                if (MONACO.isCodeEditorOpen()) {
+                    MONACO.setCodeEditorOpen(false);
+                }
+                else {
+                    const project = INTERPRETER.getCurrentProject();
+                    const story = INTERPRETER.getCurrentStory();
+                    const action = INTERPRETER.getCurrentAction();
+                    if (project && story && action) {
+                        MONACO.makeCodeEditor(project, project.files[action.range.file], action.range);
+                    }
+                }
+            }
+            else {
+                isHandled = false;
+            }
+            if (isHandled) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        });
     });
     return {
         reset,
@@ -238,7 +262,11 @@ const INTERFACE = (() => {
     };
 })();
 const INTERPRETER = (() => {
+    let currentProject = null;
+    let currentStory = null;
+    let currentAction = null;
     async function runProject(project) {
+        currentProject = project;
         await INTERFACE.reset();
         const story = {
             history: [],
@@ -249,9 +277,10 @@ const INTERPRETER = (() => {
                 variables: {},
             },
         };
+        currentStory = story;
         const initialPassage = Object.values(project.definition.passages)[0];
         if (!initialPassage) {
-            throw new Error(`This story contains no passage definitions! You must have at least one passage.`);
+            throw new InterpreterError(Object.values(project.files)[0], { row: 0, start: 0, end: 1 }, `This story contains no passage definitions! You must have at least one passage.`);
         }
         updateStoryState(story, s => ({
             ...s,
@@ -265,6 +294,7 @@ const INTERPRETER = (() => {
     async function runActionList(project, story, actions) {
         for (let i = 0; i < actions.length; i++) {
             const action = actions[i];
+            currentAction = action;
             const actionMap = {
                 continue: async (a) => {
                     const passages = Object.values(project.definition.passages);
@@ -591,42 +621,77 @@ const INTERPRETER = (() => {
             passageID: newPassageID,
         };
     }
+    function getCurrentProject() {
+        return currentProject;
+    }
+    function getCurrentStory() {
+        return currentStory;
+    }
+    function getCurrentAction() {
+        return currentAction;
+    }
     return {
         runProject,
+        getCurrentProject,
+        getCurrentStory,
+        getCurrentAction,
     };
 })();
-function clickTrap(e) {
-    e.preventDefault();
-    e.stopPropagation();
-}
-let currentBackdrop = h("div", { className: "backdrop" });
-const characterBounds = h("div", { id: "characterBounds" });
-const viewport = h("div", { id: "viewport" },
-    currentBackdrop,
-    characterBounds);
-const menu = h("div", { id: "menu", className: "closed", onclick: clickTrap });
-const errorEditor = h("div", { id: "errorEditor", className: "closed", onclick: clickTrap });
-const nameplate = h("div", { id: "nameplate" });
-const dialogue = h("div", { id: "dialogue" });
-const choiceList = h("div", { id: "choiceList" });
-const caret = h("div", { id: "caret" });
-const textbox = h("div", { id: "textbox" },
-    nameplate,
-    dialogue,
-    caret,
-    choiceList);
-const main = h("div", { id: "main" },
-    viewport,
-    textbox,
-    menu,
-    errorEditor);
-document.body.append(main);
+const MARKUP = (() => {
+    function clickTrap(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    let currentBackdrop = h("div", { className: "backdrop" });
+    const characterBounds = h("div", { id: "characterBounds" });
+    const viewport = h("div", { id: "viewport" },
+        currentBackdrop,
+        characterBounds);
+    const menu = h("div", { id: "menu", className: "closed", onclick: clickTrap });
+    const codeFiles = h("div", { id: "codeFiles" });
+    const codePane = h("div", { id: "codePane" });
+    const codeEditor = h("div", { id: "codeEditor", className: "closed", onclick: clickTrap },
+        codeFiles,
+        codePane);
+    const nameplate = h("div", { id: "nameplate" });
+    const dialogue = h("div", { id: "dialogue" });
+    const caret = h("div", { id: "caret" });
+    const choiceList = h("div", { id: "choiceList" });
+    const textbox = h("div", { id: "textbox" },
+        nameplate,
+        dialogue,
+        caret,
+        choiceList);
+    const main = h("div", { id: "main" },
+        viewport,
+        textbox,
+        menu,
+        codeEditor);
+    document.body.append(main);
+    return {
+        currentBackdrop,
+        characterBounds,
+        viewport,
+        menu,
+        codeFiles,
+        codePane,
+        codeEditor,
+        nameplate,
+        dialogue,
+        choiceList,
+        caret,
+        textbox,
+        main,
+    };
+})();
 /// <reference path="../../node_modules/monaco-editor/monaco.d.ts" />
 const MONACO = (() => {
     const LANG_ID = 'nova-vn';
+    const SAVE_DELAY = 1000;
     let loadingPromise = createExposedPromise();
     let currentFile = null;
     let currentEditor = null;
+    let fileListItems = {};
     require.config({ paths: { 'vs': 'engine/monaco-editor' } });
     require(["vs/editor/editor.main"], () => {
         monaco.languages.register({ id: LANG_ID });
@@ -652,16 +717,68 @@ const MONACO = (() => {
         });
         loadingPromise.resolve();
     });
-    async function makeCodeEditor(file) {
+    async function makeFileList(project) {
+        for (const el of Object.values(fileListItems)) {
+            if (el)
+                el.remove();
+        }
+        for (const file of Object.values(project.files)) {
+            if (!file)
+                continue;
+            const el = h("div", { className: "file" }, file.path);
+            el.addEventListener('click', () => {
+                makeCodeEditor(project, file, null);
+            });
+            if (file.path === currentFile?.path) {
+                el.classList.add('selected');
+            }
+            MARKUP.codeFiles.append(el);
+            fileListItems[file.path] = el;
+        }
+    }
+    function setDiagnosticMarkers(file, editor) {
+        const markers = file.errors.map(e => ({
+            message: e.msg,
+            severity: monaco.MarkerSeverity.Error,
+            ...convertRange(e.range),
+        }));
+        monaco.editor.setModelMarkers(editor.getModel(), LANG_ID, markers);
+    }
+    function convertRange(range) {
+        return {
+            startLineNumber: range.row + 1,
+            endLineNumber: range.row + 1,
+            startColumn: range.start + 1,
+            endColumn: range.end + 1,
+        };
+    }
+    async function updateCodeEditor(project, file) {
+        await loadingPromise;
+        if (!currentEditor)
+            throw new Error('Invalid editor');
+        currentFile = file;
+        fileListItems[file.path]?.classList.add('selected');
+        setDiagnosticMarkers(file, currentEditor);
+        const model = currentEditor.getModel();
+        model.tokenization.resetTokenization();
+    }
+    async function makeCodeEditor(project, file, range) {
         await loadingPromise;
         if (currentEditor) {
+            currentEditor.getModel()?.dispose();
             currentEditor.dispose();
             currentEditor = null;
         }
+        if (currentFile) {
+            fileListItems[currentFile.path]?.classList.remove('selected');
+        }
         currentFile = file;
+        fileListItems[file.path]?.classList.add('selected');
         const uri = monaco.Uri.parse(file.path);
         const value = file.lines.join('\n');
         const model = monaco.editor.createModel(value, LANG_ID, uri);
+        let savingPromise = null;
+        let saveTime = Date.now();
         let wasReset = false;
         model.onDidChangeContent(e => {
             if (wasReset) {
@@ -669,28 +786,56 @@ const MONACO = (() => {
                 return;
             }
             requestAnimationFrame(() => {
-                wasReset = true;
-                model.setValue(value);
+                if (NATIVE.isEnabled()) {
+                    const currentSaveTime = saveTime;
+                    saveTime = currentSaveTime;
+                    savingPromise = (async () => {
+                        await wait(SAVE_DELAY);
+                        if (saveTime === currentSaveTime) {
+                            await NATIVE.saveFile(file.path, model.getValue());
+                            const newProject = await PARSER.parseStory(project.path, NETWORK_LOADER);
+                            await makeFileList(newProject);
+                            const newFile = newProject.files[file.path];
+                            if (currentEditor && newFile && currentFile?.path === newFile?.path) {
+                                await updateCodeEditor(newProject, newFile);
+                            }
+                            else if (newFile) {
+                                await makeCodeEditor(newProject, newFile, null);
+                            }
+                        }
+                        savingPromise = null;
+                    })();
+                }
+                else {
+                    wasReset = true;
+                    model.setValue(value);
+                }
             });
         });
-        const markers = file.errors.map(e => ({
-            message: e.msg,
-            severity: monaco.MarkerSeverity.Error,
-            startLineNumber: e.range.row + 1,
-            endLineNumber: e.range.row + 1,
-            startColumn: e.range.start + 1,
-            endColumn: e.range.end + 1,
-        }));
-        monaco.editor.setModelMarkers(model, LANG_ID, markers);
-        errorEditor.classList.remove('closed');
-        currentEditor = monaco.editor.create(errorEditor, {
+        setCodeEditorOpen(true);
+        currentEditor = monaco.editor.create(MARKUP.codePane, {
             model: model,
             theme: 'vs-dark',
         });
-        errorEditor.classList.remove('closed');
+        setDiagnosticMarkers(file, currentEditor);
+        if (range) {
+            const monacoRange = convertRange(range);
+            currentEditor.revealRangeInCenter(monacoRange);
+            currentEditor.setPosition({ lineNumber: monacoRange.startLineNumber, column: monacoRange.startColumn });
+            currentEditor.focus();
+        }
+    }
+    function isCodeEditorOpen() {
+        return !MARKUP.codeEditor.classList.contains('closed');
+    }
+    function setCodeEditorOpen(open) {
+        MARKUP.codeEditor.classList.toggle('closed', !open);
     }
     return {
+        makeFileList,
         makeCodeEditor,
+        isCodeEditorOpen,
+        setCodeEditorOpen,
     };
 })();
 /// <reference path="../../node_modules/neutralinojs-types/index.d.ts" />
@@ -714,11 +859,24 @@ const NATIVE = (() => {
         return enabled;
     }
     async function waitForInitialize() {
-        await loadingPromise;
+        if (!initialized) {
+            await loadingPromise;
+        }
+    }
+    async function loadFile(path) {
+        await waitForInitialize();
+        const text = await Neutralino.filesystem.readFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`);
+        return text;
+    }
+    async function saveFile(path, content) {
+        await waitForInitialize();
+        await Neutralino.filesystem.writeFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`, content);
     }
     return {
         isEnabled,
         waitForInitialize,
+        loadFile,
+        saveFile,
     };
 })();
 const PARSER = (() => {

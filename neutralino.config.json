@@ -8,8 +8,12 @@
   "enableNativeAPI": true,
   "tokenSecurity": "one-time",
   "nativeAllowList": [
-    "app.*"
+    "app.*",
+    "filesystem.*"
   ],
+  "globalVariables": {
+    "PROJECT_DIR": "docs"
+  },
   "logging": {
     "enabled": true,
     "writeToLogFile": true

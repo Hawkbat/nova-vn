@@ -25,9 +25,10 @@ requestAnimationFrame(async () => {
         project = await PARSER.parseStory('engine/docs_project', NETWORK_LOADER)
     }
     try {
+        await MONACO.makeFileList(project)
         for (const file of Object.values(project.files)) {
             if (file?.errors.length) {
-                MONACO.makeCodeEditor(file)
+                MONACO.makeCodeEditor(project, file, file.errors[0].range)
             }
         }
         await INTERPRETER.runProject(project)
@@ -35,7 +36,7 @@ requestAnimationFrame(async () => {
         if (e instanceof ParseError || e instanceof InterpreterError) {
             console.error(e)
             e.file.errors.push(e)
-            MONACO.makeCodeEditor(e.file)
+            MONACO.makeCodeEditor(project, e.file, e.range)
         } else {
             throw e
         }

@@ -1,6 +1,11 @@
 
 const INTERPRETER = (() => {
+    let currentProject: ProjectContext | null = null
+    let currentStory: InterpreterStoryContext | null = null
+    let currentAction: PassageAction | null = null
+
     async function runProject(project: ProjectContext) {
+        currentProject = project
         await INTERFACE.reset()
         const story: InterpreterStoryContext = {
             history: [],
@@ -11,9 +16,10 @@ const INTERPRETER = (() => {
                 variables: {},
             },
         }
+        currentStory = story
         const initialPassage = Object.values(project.definition.passages)[0]
         if (!initialPassage) {
-            throw new Error(`This story contains no passage definitions! You must have at least one passage.`)
+            throw new InterpreterError(Object.values(project.files)[0]!, { row: 0, start: 0, end: 1 }, `This story contains no passage definitions! You must have at least one passage.`)
         }
         updateStoryState(story, s => ({
             ...s,
@@ -29,6 +35,7 @@ const INTERPRETER = (() => {
     async function runActionList(project: ProjectContext, story: InterpreterStoryContext, actions: PassageAction[]) {
         for (let i = 0; i < actions.length; i++) {
             const action = actions[i]
+            currentAction = action
             const actionMap: { [K in PassageActionType]: (action: PassageActionOfType<K>) => Promise<void> } = {
                 continue: async a => {
                     const passages = Object.values(project.definition.passages)
@@ -335,7 +342,22 @@ const INTERPRETER = (() => {
         }
     }
 
+    function getCurrentProject() {
+        return currentProject
+    }
+
+    function getCurrentStory() {
+        return currentStory
+    }
+
+    function getCurrentAction() {
+        return currentAction
+    }
+
     return {
         runProject,
+        getCurrentProject,
+        getCurrentStory,
+        getCurrentAction,
     }
 })()

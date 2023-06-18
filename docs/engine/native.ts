@@ -1,5 +1,7 @@
 /// <reference path="../../node_modules/neutralinojs-types/index.d.ts" />
 
+declare const NL_PROJECT_DIR: string
+
 const NATIVE = (() => {
     const enabled = 'NL_VERSION' in window
     let initialized = false
@@ -23,11 +25,26 @@ const NATIVE = (() => {
     }
 
     async function waitForInitialize() {
-        await loadingPromise
+        if (!initialized) {
+            await loadingPromise
+        }
+    }
+
+    async function loadFile(path: string) {
+        await waitForInitialize()
+        const text = await Neutralino.filesystem.readFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`)
+        return text
+    }
+
+    async function saveFile(path: string, content: string) {
+        await waitForInitialize()
+        await Neutralino.filesystem.writeFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`, content)
     }
     
     return {
         isEnabled,
         waitForInitialize,
+        loadFile,
+        saveFile,
     }
 })()

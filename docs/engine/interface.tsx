@@ -18,15 +18,15 @@ const INTERFACE = (() => {
                 el.remove()
             }
         }
-        nameplate.textContent = ''
-        dialogue.textContent = ''
-        choiceList.innerHTML = ''
+        MARKUP.nameplate.textContent = ''
+        MARKUP.dialogue.textContent = ''
+        MARKUP.choiceList.innerHTML = ''
     }
     
     async function changeBackdrop(backdrop: BackdropDefinition | null) {
-        const oldElement = currentBackdrop
-        const newElement = currentBackdrop.cloneNode() as HTMLDivElement
-        currentBackdrop = newElement
+        const oldElement = MARKUP.currentBackdrop
+        const newElement = MARKUP.currentBackdrop.cloneNode() as HTMLDivElement
+        MARKUP.currentBackdrop = newElement
         oldElement.parentNode?.insertBefore(newElement, oldElement.nextSibling)
         newElement.style.backgroundImage = backdrop ? `url(${backdrop.path})` : 'transparent'
     
@@ -42,7 +42,7 @@ const INTERFACE = (() => {
     async function addCharacter(character: CharacterDefinition, outfit: OutfitDefinition, expression: ExpressionDefinition, location: CharacterLocation) {    
         const element = <div className="character" />
         element.style.backgroundImage = `url(${expression.path})`
-        characterBounds.append(element)
+        MARKUP.characterBounds.append(element)
         characterElements[character.id] = element
     }
 
@@ -86,21 +86,21 @@ const INTERFACE = (() => {
         textRevealPromise = skipPromise
     
         if (speaker) {
-            nameplate.textContent = speaker
-            nameplate.classList.remove('hide')
+            MARKUP.nameplate.textContent = speaker
+            MARKUP.nameplate.classList.remove('hide')
         } else {
-            nameplate.classList.add('hide')
+            MARKUP.nameplate.classList.add('hide')
         }
 
-        dialogue.textContent = ''
-        caret.classList.add('hide')
+        MARKUP.dialogue.textContent = ''
+        MARKUP.caret.classList.add('hide')
         
         const parts = text.split(/\b/g)
         for (const part of parts) {
             for (const char of part) {
                 await Promise.any([skipPromise, waitForNextFrame()])
                 const span = <span>{char}</span>
-                dialogue.append(span)
+                MARKUP.dialogue.append(span)
                 Promise.any([skipPromise, wait(TEXT_HIDE_DURATION)]).then(() => {
                     const textNode = document.createTextNode(char)
                     span.replaceWith(textNode)
@@ -119,7 +119,7 @@ const INTERFACE = (() => {
         if (textRevealPromise === skipPromise) {
             textRevealPromise.resolve()
             textRevealPromise = null
-            caret.classList.remove('hide')
+            MARKUP.caret.classList.remove('hide')
         }
 
         await INTERFACE.waitForAdvance()
@@ -128,7 +128,7 @@ const INTERFACE = (() => {
     async function presentChoice(options: ChoiceOption[]) {
         const promise = createExposedPromise<ChoiceOption>()
 
-        caret.classList.add('hide')
+        MARKUP.caret.classList.add('hide')
 
         let choiceElements = options.map(o => <div className="choice" onclick={e => {
             e.preventDefault()
@@ -138,7 +138,7 @@ const INTERFACE = (() => {
         }}>{o.text}</div>)
 
         for (const el of choiceElements) {
-            choiceList.append(el)
+            MARKUP.choiceList.append(el)
         }
 
         const chosenOption = await promise
@@ -206,7 +206,29 @@ const INTERFACE = (() => {
     }
 
     requestAnimationFrame(() => {
-        main.addEventListener('click', clickAdvance)
+        MARKUP.main.addEventListener('click', clickAdvance)
+
+        window.addEventListener('keydown', e => {
+            let isHandled = true
+            if (e.key === 'Escape') {
+                if (MONACO.isCodeEditorOpen()) {
+                    MONACO.setCodeEditorOpen(false)
+                } else {
+                    const project = INTERPRETER.getCurrentProject()
+                    const story = INTERPRETER.getCurrentStory()
+                    const action = INTERPRETER.getCurrentAction()
+                    if (project && story && action) {
+                        MONACO.makeCodeEditor(project, project.files[action.range.file]!, action.range)
+                    }
+                }
+            } else {
+                isHandled = false
+            }
+            if (isHandled) {
+                e.preventDefault()
+                e.stopPropagation()
+            }
+        })
     })
 
     return {
