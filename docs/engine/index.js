@@ -26,10 +26,10 @@ requestAnimationFrame(async () => {
         project = await PARSER.parseStory('engine/docs_project', NETWORK_LOADER);
     }
     try {
-        await MONACO.makeFileList(project);
+        await MONACO.loadProject(project);
         for (const file of Object.values(project.files)) {
             if (file?.errors.length) {
-                MONACO.makeCodeEditor(project, file, file.errors[0].range);
+                await MONACO.loadFile(project, file, file.errors[0].range);
             }
         }
         await INTERPRETER.runProject(project);
@@ -38,7 +38,7 @@ requestAnimationFrame(async () => {
         if (e instanceof ParseError || e instanceof InterpreterError) {
             console.error(e);
             e.file.errors.push(e);
-            MONACO.makeCodeEditor(project, e.file, e.range);
+            await MONACO.loadFile(project, e.file, e.range);
         }
         else {
             throw e;
@@ -231,11 +231,12 @@ const INTERFACE = (() => {
                     MONACO.setCodeEditorOpen(false);
                 }
                 else {
+                    MONACO.setCodeEditorOpen(true);
                     const project = INTERPRETER.getCurrentProject();
                     const story = INTERPRETER.getCurrentStory();
                     const action = INTERPRETER.getCurrentAction();
                     if (project && story && action) {
-                        MONACO.makeCodeEditor(project, project.files[action.range.file], action.range);
+                        MONACO.loadFile(project, project.files[action.range.file], action.range);
                     }
                 }
             }
@@ -637,6 +638,233 @@ const INTERPRETER = (() => {
         getCurrentAction,
     };
 })();
+const LANGUAGE = (() => {
+    const variable = (definition) => ({ type: 'variable', definition });
+    const identifier = (subType, definition) => ({ type: 'identifier', subType, definition });
+    const number = () => ({ type: 'number' });
+    const string = () => ({ type: 'string' });
+    const keyword = (keyword) => ({ type: 'keyword', keyword });
+    const any = (...any) => ({ type: 'any', any });
+    const seq = (...seq) => ({ type: 'seq', seq });
+    const optional = (optional) => ({ type: 'optional', optional });
+    const eol = () => ({ type: 'eol' });
+    const keywordMap = (keywords) => ({ type: 'any', any: Object.entries(keywords).map(([k, v]) => seq(keyword(k), v)) });
+    const variableValue = () => any(variable(), number(), string(), identifier('value'));
+    const comparisons = ['is not less than or equal to', 'is less than or equal to', 'is not less than', 'is less than', 'is not greater than or equal to', 'is greater than or equal to', 'is not greater than', 'is greater than', 'is not', 'is', 'does not contain', 'contains'];
+    const locations = ['left', 'right', 'center'];
+    const specialValues = ['yes', 'no', 'a list', 'a map', 'nothing'];
+    const tokenMatches = (node, token, index = 0) => {
+        if (!token)
+            return node.type === 'eol';
+        switch (node.type) {
+            case 'variable': return token.type === 'variable';
+            case 'identifier': return token.type === 'identifier' && node.subType === token.subType;
+            case 'number': return token.type === 'number';
+            case 'string': return token.type === 'string';
+            case 'keyword': return token.type === 'keyword' && token.text === node.keyword;
+            case 'any': return node.any.some(n => tokenMatches(n, token));
+            case 'seq': return tokenMatches(node.seq[index], token);
+            case 'optional': return tokenMatches(node.optional, token);
+        }
+        return false;
+    };
+    const getExpectedTokens = (node, tokens, index = 0) => {
+        const token = tokens[index];
+        switch (node.type) {
+            case 'variable':
+            case 'identifier':
+            case 'number':
+            case 'string':
+            case 'keyword':
+                return !tokenMatches(node, token) ? [node] : [];
+            case 'any':
+                const matched = node.any.find(n => tokenMatches(n, token));
+                if (matched)
+                    return getExpectedTokens(matched, tokens, index);
+                return node.any.flatMap(n => getExpectedTokens(n, tokens, index));
+            case 'seq':
+                const results = [];
+                for (let i = 0; i < node.seq.length; i++) {
+                    const c = node.seq[i];
+                    if (!tokenMatches(c, tokens[index + i])) {
+                        results.push(...getExpectedTokens(c, tokens, index + i));
+                        if (c.type !== 'optional')
+                            return results;
+                    }
+                }
+                return results;
+            case 'optional':
+                return getExpectedTokens(node.optional, tokens, index);
+        }
+        return [];
+    };
+    const getTokenLabel = (node) => {
+        switch (node.type) {
+            case 'number': return 'number';
+            case 'string': return 'text';
+            case 'keyword': return node.keyword;
+            case 'variable': return 'variable name';
+            case 'identifier':
+                switch (node.subType) {
+                    case 'character': return 'character name';
+                    case 'outfit': return 'outfit name';
+                    case 'expression': return 'expression name';
+                    case 'backdrop': return 'backdrop name';
+                    case 'sound': return 'sound name';
+                    case 'passage': return 'passage name';
+                    case 'comparison': return 'comparison';
+                    case 'location': return 'location';
+                    case 'value': return 'value';
+                }
+        }
+    };
+    const getTokenOptions = (project, node, characterID) => {
+        switch (node.type) {
+            case 'number': return [{ text: `0`, template: true }];
+            case 'string': return [{ text: `""`, template: true }];
+            case 'keyword': return [{ text: node.keyword }];
+            case 'variable':
+                if (node.definition)
+                    return [{ text: `$newVar`, template: true }];
+                const globalVariables = Object.values(project.definition.variables).filter(filterFalsy).map(v => ({ text: v.id }));
+                if (characterID) {
+                    const character = project.definition.characters[characterID];
+                    if (character) {
+                        const characterVariables = Object.values(character.variables).filter(filterFalsy).map(v => ({ text: v.id }));
+                        return [...characterVariables, ...globalVariables];
+                    }
+                }
+                return [...globalVariables];
+            case 'identifier':
+                if (node.definition)
+                    return [{ text: `new_${node.subType}`, template: true }];
+                switch (node.subType) {
+                    case 'character': return Object.values(project.definition.characters).filter(filterFalsy).map(c => ({ text: c.id }));
+                    case 'backdrop': return Object.values(project.definition.backdrops).filter(filterFalsy).map(c => ({ text: c.id }));
+                    case 'sound': return Object.values(project.definition.sounds).filter(filterFalsy).map(c => ({ text: c.id }));
+                    case 'passage': return Object.values(project.definition.passages).filter(filterFalsy).map(c => ({ text: c.id }));
+                    case 'outfit': return Object.values(project.definition.characters[characterID ?? '']?.outfits ?? {}).filter(filterFalsy).map(c => ({ text: c.id }));
+                    case 'expression': return Object.values(project.definition.characters[characterID ?? '']?.outfits ?? {}).filter(filterFalsy).flatMap(o => Object.values(o.expressions).filter(filterFalsy)).map(c => ({ text: c.id }));
+                    case 'comparison': return comparisons.map(c => ({ text: c }));
+                    case 'location': return locations.map(l => ({ text: l }));
+                    case 'value': return specialValues.map(p => ({ text: p }));
+                }
+        }
+    };
+    const getSignatures = (node, prefix) => {
+        switch (node.type) {
+            case 'variable':
+            case 'identifier':
+            case 'number':
+            case 'string':
+            case 'keyword':
+                return prefix.length ? prefix.map(p => [...p, node]) : [[node]];
+            case 'optional':
+                return [...getSignatures(node.optional, prefix), ...prefix];
+            case 'any':
+                return node.any.flatMap(n => getSignatures(n, prefix));
+            case 'seq':
+                let signatures = prefix;
+                for (const c of node.seq) {
+                    signatures = getSignatures(c, signatures);
+                }
+                return signatures;
+            case 'eol':
+                return prefix;
+        }
+    };
+    const getActiveSignatures = (tokens, currentIndex) => {
+        const results = [];
+        for (let i = 0; i < LANGUAGE.signatures.length; i++) {
+            const signature = LANGUAGE.signatures[i];
+            let parameterIndex = -1;
+            for (let j = 0; j < signature.length; j++) {
+                const c = signature[j];
+                const outOfRange = j >= tokens.length;
+                const matches = tokenMatches(c, tokens[j]);
+                if (!outOfRange && matches) {
+                    parameterIndex = j;
+                }
+                if (!outOfRange && !matches) {
+                    break;
+                }
+            }
+            if (tokens.length && parameterIndex < 0)
+                continue;
+            results.push({ signature, parameterIndex });
+        }
+        const signatures = results.map(r => r.signature);
+        const highestParamIndex = results.reduce((p, c) => Math.max(p, c.parameterIndex), -1);
+        const match = results.find(r => r.parameterIndex === highestParamIndex);
+        if (match)
+            return { signatures, signatureIndex: signatures.indexOf(match.signature), signature: match.signature, parameterIndex: Math.min(currentIndex, match.parameterIndex) };
+        return { signatures, signature: null, signatureIndex: -1, parameterIndex: -1 };
+    };
+    const definition = any(keywordMap({
+        define: keywordMap({
+            'global variable': seq(variable(true), optional(keyword('which')), keyword('is'), variableValue(), eol()),
+            'cast variable': seq(variable(true), optional(keyword('which')), keyword('is'), variableValue(), eol()),
+            character: seq(identifier('character', true), keyword('as'), string(), eol()),
+            backdrop: seq(identifier('backdrop', true), optional(seq(keyword('from'), string())), eol()),
+            sound: seq(identifier('sound', true), optional(seq(keyword('from'), string())), eol()),
+            passage: seq(identifier('passage', true), eol()),
+        }),
+        has: keywordMap({
+            outfit: seq(identifier('outfit', true), eol()),
+        }),
+        with: keywordMap({
+            expression: seq(identifier('expression', true), eol()),
+        }),
+        include: seq(string(), eol()),
+        continue: eol(),
+        'go to': seq(identifier('passage'), eol()),
+        end: eol(),
+        display: seq(identifier('backdrop'), eol()),
+        play: seq(identifier('sound'), eol()),
+        narrate: seq(string(), eol()),
+        option: seq(string(), eol()),
+        check: seq(keyword('if'), variable(), identifier('comparison'), variableValue(), eol()),
+        set: seq(variable(), keyword('to'), variableValue(), eol()),
+        add: seq(variableValue(), keyword('to'), variable(), optional(seq(keyword('as'), variableValue())), eol()),
+        subtract: seq(variableValue(), keyword('from'), variable(), eol()),
+    }), seq(identifier('character'), keywordMap({
+        enters: seq(optional(seq(keyword('from'), identifier('location'))), eol()),
+        enter: seq(optional(seq(keyword('from'), identifier('location'))), eol()),
+        exits: seq(optional(seq(keyword('to'), identifier('location'))), eol()),
+        exit: seq(optional(seq(keyword('to'), identifier('location'))), eol()),
+        moves: seq(optional(seq(keyword('to'), identifier('location'))), eol()),
+        move: seq(optional(seq(keyword('to'), identifier('location'))), eol()),
+        says: seq(string(), eol()),
+        say: seq(string(), eol()),
+        emotes: seq(identifier('expression'), eol()),
+        emote: seq(identifier('expression'), eol()),
+        wears: seq(identifier('outfit'), eol()),
+        wear: seq(identifier('outfit'), eol()),
+        checks: seq(keyword('if'), variable(), identifier('comparison'), variableValue(), eol()),
+        check: seq(keyword('if'), variable(), identifier('comparison'), variableValue(), eol()),
+        sets: seq(variable(), keyword('to'), variableValue(), eol()),
+        set: seq(variable(), keyword('to'), variableValue(), eol()),
+        adds: seq(variableValue(), keyword('to'), variable(), optional(seq(keyword('as'), variableValue())), eol()),
+        add: seq(variableValue(), keyword('to'), variable(), optional(seq(keyword('as'), variableValue())), eol()),
+        subtracts: seq(variableValue(), keyword('from'), variable(), eol()),
+        subtract: seq(variableValue(), keyword('from'), variable(), eol()),
+    })));
+    const findKeywords = (n, a) => n.type === 'keyword' ? [...a, n.keyword] : n.type === 'any' ? n.any.reduce((p, c) => findKeywords(c, p), a) : n.type === 'seq' ? n.seq.reduce((p, c) => findKeywords(c, p), a) : n.type === 'optional' ? findKeywords(n.optional, a) : a;
+    const keywords = [...new Set(findKeywords(definition, [])).values()];
+    const identifiers = [...new Set([...comparisons, ...locations, ...specialValues]).values()];
+    const signatures = getSignatures(definition, []);
+    return {
+        definition,
+        keywords,
+        identifiers,
+        specialValues,
+        signatures,
+        getExpectedTokens,
+        getTokenLabel,
+        getTokenOptions,
+        getActiveSignatures,
+    };
+})();
 const MARKUP = (() => {
     function clickTrap(e) {
         e.preventDefault();
@@ -689,12 +917,40 @@ const MONACO = (() => {
     const LANG_ID = 'nova-vn';
     const SAVE_DELAY = 500;
     let loadingPromise = createExposedPromise();
+    let currentProject = null;
     let currentFile = null;
     let currentEditor = null;
     let fileListItems = {};
     require.config({ paths: { 'vs': 'engine/monaco-editor' } });
     require(["vs/editor/editor.main"], () => {
         monaco.languages.register({ id: LANG_ID });
+        monaco.languages.setMonarchTokensProvider(LANG_ID, {
+            keywords: LANGUAGE.keywords,
+            identifiers: LANGUAGE.identifiers,
+            escapes: /\\(?:[abfnrtv\\"']|x[0-9A-Fa-f]{1,4}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/,
+            tokenizer: {
+                root: [
+                    [/\$[\w$]*/, 'variable'],
+                    [/[a-zA-Z_][\w$]*/, {
+                            cases: {
+                                '@keywords': 'keyword',
+                                '@identifiers': 'type',
+                                '@default': 'type',
+                            },
+                        }],
+                    [/[\-+]?\d+(\.\d+)?/, 'number'],
+                    [/"([^"\\]|\\.)*$/, 'string.invalid'],
+                    [/"/, { token: 'string.quote', bracket: '@open', next: '@string' }],
+                    [/[ \t\r\n]+/, 'white'],
+                ],
+                string: [
+                    [/[^\\"]+/, 'string'],
+                    [/@escapes/, 'string.escape'],
+                    [/\\./, 'string.escape.invalid'],
+                    [/"/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+                ],
+            }
+        });
         const tokenizerState = { clone: () => tokenizerState, equals: () => true };
         monaco.languages.setTokensProvider(LANG_ID, {
             getInitialState: () => tokenizerState,
@@ -715,8 +971,278 @@ const MONACO = (() => {
                 return { endState: tokenizerState, tokens };
             },
         });
+        monaco.languages.registerHoverProvider(LANG_ID, {
+            async provideHover(model, position, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                const contents = ({
+                    unknown: [],
+                    keyword: [],
+                    identifier: ({
+                        '': [],
+                        character: [`(Character) ${token.text}`],
+                        outfit: [`(Outfit) ${token.text}`],
+                        expression: [`(Expression) ${token.text}`],
+                        backdrop: [`(Backdrop) ${token.text}`],
+                        sound: [`(Sound) ${token.text}`],
+                        passage: [`(Passage) ${token.text}`],
+                        location: [`(Location) ${token.text}`],
+                        comparison: [`(Comparison) ${token.text}`],
+                        value: [`(Value) ${token.text}`],
+                    })[token.subType ?? ''],
+                    variable: [`(Variable) ${token.text}`],
+                    string: [`(Text) ${token.text}`],
+                    number: [`(Number) ${token.text}`],
+                })[token.type];
+                const context = getTokenContext(currentProject, currentFile, token);
+                if (context) {
+                    if (Array.isArray(context)) {
+                        contents.push(context.map(c => `<img height="192" src="${c.path}">`).join(''));
+                        contents.push(...context.map(c => c.path));
+                    }
+                    else if ('outfits' in context) {
+                        contents[0] = `(Character) ${token.text} ("${context.name}")`;
+                        const expr = Object.values(Object.values(context.outfits)[0]?.expressions ?? {})[0];
+                        if (expr)
+                            contents.push(`<img height="192" src="${expr.path}">`);
+                    }
+                    else if ('expressions' in context) {
+                        contents.push(Object.values(context.expressions).filter(filterFalsy).map(c => `<img height="192" src="${c.path}">`).join(''));
+                    }
+                    else if ('path' in context) {
+                        if (context.path.toLowerCase().endsWith('.png') || context.path.toLowerCase().endsWith('.jpg')) {
+                            contents.push(`<img height="192" src="${context.path}">`);
+                        }
+                        else if (context.path.toLowerCase().endsWith('.wav') || context.path.toLowerCase().endsWith('.mp3')) {
+                            INTERFACE.playSound(context);
+                        }
+                        contents.push(context.path);
+                    }
+                    else if ('scope' in context) {
+                        contents[0] = `${context.scope === 'global' ? '(Global Variable)' : context.scope === 'cast' ? '(Cast Variable)' : context.scope === 'character' ? `(Character Variable: ${context.characterID})` : ''} ${token.text} (Initially: ${printVariableValue(context.initialValue)})`;
+                    }
+                }
+                return {
+                    contents: contents.map(c => ({ value: c, isTrusted: true, supportHtml: true, baseUri: { scheme: 'http' } })),
+                    range: convertRangeToRange(token.range),
+                };
+            },
+        });
+        monaco.languages.registerDocumentHighlightProvider(LANG_ID, {
+            async provideDocumentHighlights(model, position, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                return getRangesWithSameContext(currentProject, currentFile, token).filter(t => t.file === currentFile?.path).map(r => ({ range: convertRangeToRange(r) }));
+            },
+        });
+        monaco.languages.registerDefinitionProvider(LANG_ID, {
+            provideDefinition(model, position, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                const ctx = getTokenContext(currentProject, currentFile, token);
+                if (ctx)
+                    return Array.isArray(ctx) ? ctx.map(c => convertRangeToLocation(c.range)) : convertRangeToLocation(ctx.range);
+            },
+        });
+        monaco.languages.registerReferenceProvider(LANG_ID, {
+            provideReferences(model, position, context, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                return getRangesWithSameContext(currentProject, currentFile, token).map(r => convertRangeToLocation(r));
+            },
+        });
+        monaco.languages.registerRenameProvider(LANG_ID, {
+            provideRenameEdits(model, position, newName, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                const ranges = getRangesWithSameContext(currentProject, currentFile, token);
+                if (!ranges.length)
+                    return null;
+                return { edits: ranges.map(r => ({ resource: monaco.Uri.parse(r.file), textEdit: { range: convertRangeToRange(r), text: newName }, versionId: monaco.editor.getModel(monaco.Uri.parse(r.file))?.getVersionId() })) };
+            },
+            resolveRenameLocation(model, position, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                if (!token)
+                    return null;
+                const ranges = getRangesWithSameContext(currentProject, currentFile, token);
+                if (!ranges.length || (token.type !== 'identifier' && token.type !== 'variable'))
+                    return { text: token.text, range: convertRangeToRange(token.range), rejectReason: 'You cannot rename this element.' };
+                if (token.type === 'identifier' && (token.subType === 'comparison' || token.subType === 'location' || token.subType === 'value'))
+                    return { text: token.text, range: convertRangeToRange(token.range), rejectReason: 'You cannot rename this element.' };
+                return { text: token.text, range: convertRangeToRange(token.range) };
+            },
+        });
+        monaco.languages.registerSignatureHelpProvider(LANG_ID, {
+            signatureHelpTriggerCharacters: [' ', '\t'],
+            signatureHelpRetriggerCharacters: [' ', '\t'],
+            provideSignatureHelp(model, position, cancellationToken, context) {
+                if (!currentProject || !currentFile)
+                    return null;
+                const token = getTokenAtPosition(currentFile, position);
+                const lineTokens = currentFile.tokens.filter(t => t.range.row === position.lineNumber - 1);
+                const previousTokens = lineTokens.filter(t => t.range.start <= position.column - 1);
+                const isOnLastToken = previousTokens.length && previousTokens[previousTokens.length - 1] === token;
+                const currentIndex = isOnLastToken ? previousTokens.length - 1 : previousTokens.length;
+                const activeSig = LANGUAGE.getActiveSignatures(lineTokens, currentIndex);
+                const signatures = activeSig.signatures.map(s => {
+                    let paramSubsets = [];
+                    let label = '';
+                    for (const p of s) {
+                        const start = label.length;
+                        label += p.type === 'keyword' ? p.keyword : `'${LANGUAGE.getTokenLabel(p)}'`;
+                        const end = label.length;
+                        label += ' ';
+                        paramSubsets.push([start, end]);
+                    }
+                    return {
+                        label,
+                        parameters: paramSubsets.map(p => ({ label: p })),
+                    };
+                });
+                return {
+                    value: {
+                        signatures,
+                        activeParameter: activeSig.parameterIndex + (isOnLastToken ? 0 : 1),
+                        activeSignature: activeSig.signatureIndex,
+                    },
+                    dispose: () => { },
+                };
+            },
+        });
+        monaco.languages.registerCompletionItemProvider(LANG_ID, {
+            triggerCharacters: [' ', '\t'],
+            provideCompletionItems(model, position, context, cancellationToken) {
+                if (!currentProject || !currentFile)
+                    return { suggestions: [] };
+                const token = getTokenAtPosition(currentFile, position);
+                const previousTokens = currentFile.tokens.filter(t => t.range.row === position.lineNumber - 1 && t.range.end <= position.column - 1);
+                const expected = LANGUAGE.getExpectedTokens(LANGUAGE.definition, previousTokens);
+                const characterID = previousTokens.find(p => p.type === 'identifier' && p.subType === 'character')?.text ?? null;
+                const options = expected.flatMap(e => LANGUAGE.getTokenOptions(currentProject, e, characterID));
+                const range = token ? convertRangeToRange(token.range) : { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: position.column, endColumn: position.column };
+                return {
+                    suggestions: options.map(o => ({ label: o.text, kind: monaco.languages.CompletionItemKind.Variable, range, insertText: o.text, insertTextRules: o.template ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined })),
+                };
+            },
+        });
+        monaco.editor.registerEditorOpener({
+            openCodeEditor(source, resource, selectionOrPosition) {
+                if (!currentProject || !currentFile)
+                    return false;
+                const targetFile = Object.values(currentProject.files).filter(filterFalsy).find(f => monaco.Uri.parse(f.path).path === resource.path);
+                if (targetFile) {
+                    let range = null;
+                    if (!selectionOrPosition)
+                        range = null;
+                    else if ('column' in selectionOrPosition)
+                        range = getTokenAtPosition(targetFile, selectionOrPosition)?.range ?? null;
+                    else
+                        range = getTokenAtPosition(targetFile, { column: selectionOrPosition.startColumn, lineNumber: selectionOrPosition.startLineNumber })?.range ?? null;
+                    loadFile(currentProject, targetFile, range);
+                    return true;
+                }
+                return false;
+            },
+        });
         loadingPromise.resolve();
     });
+    function getTokenAtPosition(file, position) {
+        const token = file.tokens.find(t => t.range.row + 1 === position.lineNumber && t.range.start + 1 <= position.column && t.range.end + 1 >= position.column);
+        return token;
+    }
+    function getTokenContext(project, file, token) {
+        if (token.type === 'identifier' && token.subType) {
+            if (token.subType === 'character') {
+                const character = project.definition.characters[token.text];
+                if (character)
+                    return character;
+            }
+            else if (token.subType === 'outfit') {
+                const characterID = file.tokens.find(t => t.range.row === token.range.row && t.subType === 'character')?.text;
+                const character = project.definition.characters[characterID ?? ''];
+                if (character) {
+                    const outfit = character.outfits[token.text];
+                    if (outfit)
+                        return outfit;
+                }
+            }
+            else if (token.subType === 'expression') {
+                const characterID = file.tokens.find(t => t.range.row === token.range.row && t.subType === 'character')?.text;
+                const character = project.definition.characters[characterID ?? ''];
+                if (character) {
+                    const possibleExpressions = Object.values(character.outfits).flatMap(o => o?.expressions[token.text]).filter(filterFalsy);
+                    return possibleExpressions;
+                }
+            }
+            else if (token.subType === 'backdrop') {
+                const backdrop = project.definition.backdrops[token.text];
+                if (backdrop)
+                    return backdrop;
+            }
+            else if (token.subType === 'sound') {
+                const sound = project.definition.sounds[token.text];
+                if (sound)
+                    return sound;
+            }
+            else if (token.subType === 'passage') {
+                const passage = project.definition.passages[token.text];
+                if (passage)
+                    return passage;
+            }
+        }
+        else if (token.type === 'variable') {
+            const characterID = file.tokens.find(t => t.range.row === token.range.row && t.subType === 'character')?.text;
+            if (characterID) {
+                const character = project.definition.characters[characterID ?? ''];
+                if (character) {
+                    const variable = character.variables[token.text];
+                    if (variable)
+                        return variable;
+                }
+            }
+            const variable = project.definition.variables[token.text];
+            if (variable)
+                return variable;
+        }
+        return null;
+    }
+    function getRangesWithSameContext(project, file, token) {
+        const context = getTokenContext(project, file, token);
+        const match = (a, b) => Array.isArray(a) && Array.isArray(b) ? a.every(v => b.includes(v)) : a !== null && a === b;
+        const ranges = Object.values(project.files).filter(filterFalsy).flatMap(f => f.tokens.filter(t => match(context, getTokenContext(project, f, t))).map(t => ({ file: f.path, ...t.range })));
+        return ranges;
+    }
+    function convertRangeToLocation(range) {
+        return {
+            uri: monaco.Uri.parse(range.file),
+            range: convertRangeToRange(range),
+        };
+    }
+    function convertRangeToRange(range) {
+        return {
+            startLineNumber: range.row + 1,
+            endLineNumber: range.row + 1,
+            startColumn: range.start + 1,
+            endColumn: range.end + 1,
+        };
+    }
     async function makeFileList(project) {
         for (const el of Object.values(fileListItems)) {
             if (el)
@@ -736,26 +1262,77 @@ const MONACO = (() => {
             fileListItems[file.path] = el;
         }
     }
-    function setDiagnosticMarkers(file, editor) {
+    async function setDiagnosticMarkers(file, editor) {
+        await loadingPromise;
         const markers = file.errors.map(e => ({
             message: e.msg,
             severity: monaco.MarkerSeverity.Error,
-            ...convertRange(e.range),
+            ...convertRangeToRange(e.range),
         }));
         monaco.editor.setModelMarkers(editor.getModel(), LANG_ID, markers);
     }
-    function convertRange(range) {
-        return {
-            startLineNumber: range.row + 1,
-            endLineNumber: range.row + 1,
-            startColumn: range.start + 1,
-            endColumn: range.end + 1,
-        };
+    async function upsertModels(project) {
+        await loadingPromise;
+        for (const file of Object.values(project.files)) {
+            if (file)
+                await upsertModel(project, file);
+        }
+    }
+    async function upsertModel(project, file) {
+        await loadingPromise;
+        const uri = monaco.Uri.parse(file.path);
+        const value = file.lines.join('\n');
+        let model;
+        let existingModel = monaco.editor.getModel(uri);
+        if (existingModel) {
+            model = existingModel;
+            if (model.getValue() !== value) {
+                console.log('File content mismatch; reload might not be triggered properly?');
+                //model.setValue(value)
+            }
+        }
+        else {
+            model = monaco.editor.createModel(value, LANG_ID, uri);
+            let savingPromise = null;
+            let saveTime = Date.now();
+            let wasReset = false;
+            model.onDidChangeContent(e => {
+                if (wasReset) {
+                    wasReset = false;
+                    return;
+                }
+                requestAnimationFrame(() => {
+                    if (NATIVE.isEnabled()) {
+                        const currentSaveTime = saveTime;
+                        saveTime = currentSaveTime;
+                        savingPromise = (async () => {
+                            await wait(SAVE_DELAY);
+                            if (saveTime === currentSaveTime) {
+                                await NATIVE.saveFile(file.path, model.getValue());
+                                const newProject = await PARSER.parseStory(project.path, NETWORK_LOADER);
+                                await loadProject(newProject);
+                                const newFile = newProject.files[file.path];
+                                if (newFile) {
+                                    await loadFile(newProject, newFile, null);
+                                }
+                            }
+                            savingPromise = null;
+                        })();
+                    }
+                    else {
+                        wasReset = true;
+                        model.setValue(value);
+                    }
+                });
+            });
+        }
+        return model;
     }
     async function updateCodeEditor(project, file) {
         await loadingPromise;
         if (!currentEditor)
-            throw new Error('Invalid editor');
+            return;
+        currentProject = project;
         currentFile = file;
         fileListItems[file.path]?.classList.add('selected');
         setDiagnosticMarkers(file, currentEditor);
@@ -765,64 +1342,59 @@ const MONACO = (() => {
     async function makeCodeEditor(project, file, range) {
         await loadingPromise;
         if (currentEditor) {
-            currentEditor.getModel()?.dispose();
             currentEditor.dispose();
             currentEditor = null;
         }
         if (currentFile) {
             fileListItems[currentFile.path]?.classList.remove('selected');
         }
+        currentProject = project;
         currentFile = file;
         fileListItems[file.path]?.classList.add('selected');
-        const uri = monaco.Uri.parse(file.path);
-        const value = file.lines.join('\n');
-        const model = monaco.editor.createModel(value, LANG_ID, uri);
-        let savingPromise = null;
-        let saveTime = Date.now();
-        let wasReset = false;
-        model.onDidChangeContent(e => {
-            if (wasReset) {
-                wasReset = false;
-                return;
-            }
-            requestAnimationFrame(() => {
-                if (NATIVE.isEnabled()) {
-                    const currentSaveTime = saveTime;
-                    saveTime = currentSaveTime;
-                    savingPromise = (async () => {
-                        await wait(SAVE_DELAY);
-                        if (saveTime === currentSaveTime) {
-                            await NATIVE.saveFile(file.path, model.getValue());
-                            const newProject = await PARSER.parseStory(project.path, NETWORK_LOADER);
-                            await makeFileList(newProject);
-                            const newFile = newProject.files[file.path];
-                            if (currentEditor && newFile && currentFile?.path === newFile?.path) {
-                                await updateCodeEditor(newProject, newFile);
-                            }
-                            else if (newFile) {
-                                await makeCodeEditor(newProject, newFile, null);
-                            }
-                        }
-                        savingPromise = null;
-                    })();
-                }
-                else {
-                    wasReset = true;
-                    model.setValue(value);
-                }
-            });
-        });
-        setCodeEditorOpen(true);
+        const model = await upsertModel(project, file);
         currentEditor = monaco.editor.create(MARKUP.codePane, {
             model: model,
             theme: 'vs-dark',
+            automaticLayout: true,
         });
-        setDiagnosticMarkers(file, currentEditor);
+        await setDiagnosticMarkers(file, currentEditor);
         if (range) {
-            const monacoRange = convertRange(range);
+            const monacoRange = convertRangeToRange(range);
             currentEditor.revealRangeInCenter(monacoRange);
             currentEditor.setPosition({ lineNumber: monacoRange.startLineNumber, column: monacoRange.startColumn });
             currentEditor.focus();
+        }
+    }
+    function getVariableValueType(value) {
+        return Object.keys(value)[0];
+    }
+    function isVariableValueType(value, type) {
+        return getVariableValueType(value) === type;
+    }
+    function printVariableValue(value) {
+        if (isVariableValueType(value, 'boolean')) {
+            return value.boolean ? 'yes' : 'no';
+        }
+        else if (isVariableValueType(value, 'number')) {
+            return JSON.stringify(value.number);
+        }
+        else if (isVariableValueType(value, 'string')) {
+            return JSON.stringify(value.string);
+        }
+        else if (isVariableValueType(value, 'null')) {
+            return 'nothing';
+        }
+        else if (isVariableValueType(value, 'list')) {
+            return 'a list';
+        }
+        else if (isVariableValueType(value, 'map')) {
+            return 'a map';
+        }
+        else if (isVariableValueType(value, 'variable')) {
+            return value.variable;
+        }
+        else {
+            return JSON.stringify(value);
         }
     }
     function isCodeEditorOpen() {
@@ -831,9 +1403,21 @@ const MONACO = (() => {
     function setCodeEditorOpen(open) {
         MARKUP.codeEditor.classList.toggle('closed', !open);
     }
+    async function loadProject(project) {
+        await makeFileList(project);
+        await upsertModels(project);
+    }
+    async function loadFile(project, file, range) {
+        if (currentEditor && currentFile?.path === file?.path) {
+            await updateCodeEditor(project, file);
+        }
+        else {
+            await makeCodeEditor(project, file, range);
+        }
+    }
     return {
-        makeFileList,
-        makeCodeEditor,
+        loadProject,
+        loadFile,
         isCodeEditorOpen,
         setCodeEditorOpen,
     };
@@ -905,6 +1489,7 @@ const PARSER = (() => {
         const file = {
             path,
             lines,
+            lineStates: lines.map(() => ({ indent: 0 })),
             tokens: [],
             cursor: { row: 0, col: 0 },
             states: [],
@@ -976,11 +1561,23 @@ const PARSER = (() => {
         const token = peekAny(file);
         throw new ParseError(file, token.range, `${error} ${keywordList}, but this line has '${token.text}' instead.`);
     }
+    function parseIdentifierSelect(file, subType, optionMap, error) {
+        const identifiers = Object.keys(optionMap);
+        for (const identifier of identifiers) {
+            const token = tryAdvance(file, peekIdentifier(file, identifier, subType));
+            if (token) {
+                return optionMap[identifier](token);
+            }
+        }
+        const identifierList = identifiers.map((v, i, a) => a.length && i === a.length - 1 ? `or '${v}'` : `'${v}'`).join(identifiers.length > 2 ? ', ' : ' ');
+        const token = peekAny(file);
+        throw new ParseError(file, token.range, `${error} ${identifierList}, but this line has '${token.text}' instead.`);
+    }
     function parseCharacterSubDefinition(project, file, character, indent) {
         advance(file, peekKeyword(file, 'has'), `Character sub-definitions must start with 'has'`);
         parseKeywordSelect(file, {
             outfit: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Outfit definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'outfit'), `Outfit definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
                 if (character.outfits[id]) {
                     throw new ParseError(file, identifierToken.range, `Outfits names must be unique, but you already have a outfit named '${id}' defined elsewhere for this character.`);
@@ -988,6 +1585,7 @@ const PARSER = (() => {
                 character.outfits[id] = {
                     id,
                     expressions: {},
+                    range: getFileRange(file, identifierToken),
                 };
                 file.states.push({ indent, character, outfit: character.outfits[id] });
                 checkEndOfLine(file, `Outfit definitions must not have anything here after the outfit name`);
@@ -1001,7 +1599,7 @@ const PARSER = (() => {
         advance(file, peekKeyword(file, 'with'), `Outfit sub-definitions must start with 'with'`);
         parseKeywordSelect(file, {
             expression: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Expression definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'expression'), `Expression definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
                 if (outfit.expressions[id]) {
                     throw new ParseError(file, identifierToken.range, `Expression names must be unique, but you already have an expression named '${id}' defined elsewhere for this outfit.`);
@@ -1009,6 +1607,7 @@ const PARSER = (() => {
                 outfit.expressions[id] = {
                     id,
                     path: `${project.path}/characters/${character.id}/${outfit.id}/${id}.png`,
+                    range: getFileRange(file, identifierToken),
                 };
                 checkEndOfLine(file, `Expression definitions must not have anything here after the expression name`);
             }
@@ -1033,6 +1632,7 @@ const PARSER = (() => {
             scope,
             characterID: character?.id,
             type,
+            range: getFileRange(file, varToken),
         };
         checkEndOfLine(file, `${scopeDisplay} variable definitions must not have anything here after the default value`);
     }
@@ -1045,7 +1645,7 @@ const PARSER = (() => {
                 parseVariableDefinition(project, file, 'cast');
             },
             character: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Character definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'character'), `Character definitions must have a name that starts with a letter here`);
                 advance(file, peekKeyword(file, 'as'), `Character definitions must have a name here, starting with the word 'as', like 'as "Jane"'`);
                 const nameToken = advance(file, peekString(file), `Character definitions must have a name here, contained in double-quotes, like 'as "Jane"'`);
                 const id = identifierToken.text;
@@ -1058,12 +1658,13 @@ const PARSER = (() => {
                     name,
                     outfits: {},
                     variables: {},
+                    range: getFileRange(file, identifierToken),
                 };
                 file.states.push({ indent: indent, character: project.definition.characters[id] });
                 checkEndOfLine(file, `Character definitions must not have anything here after the name`);
             },
             backdrop: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Backdrop definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'backdrop'), `Backdrop definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
                 let path = `${project.path}/backdrops/${id}.png`;
                 if (tryAdvance(file, peekKeyword(file, 'from'))) {
@@ -1077,11 +1678,12 @@ const PARSER = (() => {
                 project.definition.backdrops[id] = {
                     id,
                     path,
+                    range: getFileRange(file, identifierToken),
                 };
                 checkEndOfLine(file, `Backdrop definitions must not have anything here after the name`);
             },
             sound: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Sound definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'sound'), `Sound definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
                 let path = `${project.path}/sound/${id}.mp3`;
                 if (tryAdvance(file, peekKeyword(file, 'from'))) {
@@ -1095,11 +1697,12 @@ const PARSER = (() => {
                 project.definition.sounds[id] = {
                     id,
                     path,
+                    range: getFileRange(file, identifierToken),
                 };
                 checkEndOfLine(file, `Sound definitions must not have anything here after the name`);
             },
             passage: () => {
-                const identifierToken = advance(file, peekAnyIdentifier(file), `Passage definitions must have a name that starts with a letter here`);
+                const identifierToken = advance(file, peekAnyIdentifier(file, 'passage'), `Passage definitions must have a name that starts with a letter here`);
                 const id = identifierToken.text;
                 if (project.definition.passages[id]) {
                     throw new ParseError(file, identifierToken.range, `Passage names must be unique, but you already have a passage named '${id}' defined elsewhere.`);
@@ -1107,6 +1710,7 @@ const PARSER = (() => {
                 project.definition.passages[id] = {
                     id,
                     actions: [],
+                    range: getFileRange(file, identifierToken),
                 };
                 file.states.push({ indent: indent, passage: project.definition.passages[id] });
                 checkEndOfLine(file, `Passage definitions must not have anything here after the name`);
@@ -1114,20 +1718,16 @@ const PARSER = (() => {
         }, `Definitions must be a`);
     }
     function parsePassageAction(project, file, passage, parent, indent) {
-        const identifierToken = peekAnyIdentifier(file);
-        if (identifierToken && project.definition.characters[identifierToken.text]) {
+        const identifierToken = peekAnyIdentifier(file, 'character');
+        const characterID = identifierToken?.text ?? '';
+        const character = project.definition.characters[characterID];
+        if (identifierToken && character) {
             advance(file, identifierToken, '');
-            const character = project.definition.characters[identifierToken.text];
-            const characterID = character.id;
             const optionMap = {
                 enter: t => {
                     let location = 'default';
                     if (tryAdvance(file, peekKeyword(file, 'from'))) {
-                        location = parseKeywordSelect(file, {
-                            left: () => 'left',
-                            right: () => 'right',
-                            center: () => 'center',
-                        }, `Character entry location must be`);
+                        location = parseLocation(file, `Character entry location must be`);
                         checkEndOfLine(file, `Character entry actions must not have anything here after the location`);
                     }
                     else {
@@ -1139,11 +1739,7 @@ const PARSER = (() => {
                 exit: t => {
                     let location = 'default';
                     if (tryAdvance(file, peekKeyword(file, 'to'))) {
-                        location = parseKeywordSelect(file, {
-                            left: () => 'left',
-                            right: () => 'right',
-                            center: () => 'center',
-                        }, `Character exit location must be`);
+                        location = parseLocation(file, `Character exit location must be`);
                         checkEndOfLine(file, `Character exit actions must not have anything here after the location`);
                     }
                     else {
@@ -1154,11 +1750,7 @@ const PARSER = (() => {
                 exits: t => optionMap.exit(t),
                 move: t => {
                     tryAdvance(file, peekKeyword(file, 'to'));
-                    const location = parseKeywordSelect(file, {
-                        left: () => 'left',
-                        right: () => 'right',
-                        center: () => 'center',
-                    }, `Character movement location must be`);
+                    const location = parseLocation(file, `Character movement location must be`);
                     checkEndOfLine(file, `Character movement actions must not have anything here after the location`);
                     parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location });
                 },
@@ -1170,20 +1762,20 @@ const PARSER = (() => {
                 },
                 says: t => optionMap.say(t),
                 emote: t => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character expression change actions must have an expression name here`);
+                    const identifierToken = advance(file, peekAnyIdentifier(file, 'expression'), `Character expression change actions must have an expression name here`);
                     const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === identifierToken.text);
                     if (!expression) {
-                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here`);
+                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here. Did you forget to define it with 'with expression ${identifierToken.text}' under an outfit definition?`);
                     }
                     checkEndOfLine(file, `Character expression change actions must not have anything here after the expression name`);
                     parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID: expression.id });
                 },
                 emotes: t => optionMap.emote(t),
                 wear: t => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Character outfit change actions must have an expression name here`);
+                    const identifierToken = advance(file, peekAnyIdentifier(file, 'outfit'), `Character outfit change actions must have an outfit name here`);
                     const outfit = Object.values(character.outfits).find(o => o?.id === identifierToken.text);
                     if (!outfit) {
-                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here`);
+                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here. Did you forget to define it with 'has outfit ${identifierToken.text}' under a character definition?`);
                     }
                     checkEndOfLine(file, `Character outfit change actions must not have anything here after the outfit name`);
                     parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID: outfit.id });
@@ -1195,7 +1787,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character check actions must have a defined character or cast variable name here`);
+                        throw new ParseError(file, variableToken.range, `Character check actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
                     }
                     const comparison = parseComparison(file, `Character check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character check actions must have a value specified here to compare against`));
@@ -1210,7 +1802,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character set actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Character set actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
                     }
                     advance(file, peekKeyword(file, 'to'), `Character set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character set actions must have a value specified here to store in the variable`));
@@ -1225,7 +1817,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character add actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Character add actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
                     }
                     let key = undefined;
                     if (variable.type === 'map') {
@@ -1243,7 +1835,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = character.variables[variableID] ?? project.definition.variables[variableID];
                     if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character subtract actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Character subtract actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
                     }
                     checkEndOfLine(file, `Character subtract actions must not have anything here after the value`);
                     parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID });
@@ -1259,9 +1851,8 @@ const PARSER = (() => {
                     parent.actions.push({ type: 'continue', range: getFileRange(file, t) });
                 },
                 'go to': t => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Go-To actions must have a passage name here`);
+                    const identifierToken = advance(file, peekAnyIdentifier(file, 'passage'), `Go-To actions must have a passage name here`);
                     const passageID = identifierToken.text;
-                    // Target passages are typically going to be defined later in the file, so don't try to resolve them immediately
                     checkEndOfLine(file, `Go-To actions must not have anything here after the passage name`);
                     parent.actions.push({ type: 'goto', range: getFileRange(file, t), passageID, passageRange: getFileRange(file, identifierToken) });
                 },
@@ -1270,19 +1861,19 @@ const PARSER = (() => {
                     parent.actions.push({ type: 'end', range: getFileRange(file, t) });
                 },
                 display: t => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Display actions must have a backdrop name here`);
+                    const identifierToken = advance(file, peekAnyIdentifier(file, 'backdrop'), `Display actions must have a backdrop name here`);
                     const backdrop = project.definition.backdrops[identifierToken.text];
                     if (!backdrop) {
-                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here`);
+                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here. Did you forget to define it with 'define backdrop ${identifierToken.text}'?`);
                     }
                     checkEndOfLine(file, `Display actions must not have anything here after the backdrop name`);
                     parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID: backdrop.id });
                 },
                 play: t => {
-                    const identifierToken = advance(file, peekAnyIdentifier(file), `Play Sound actions must have a sound name here`);
+                    const identifierToken = advance(file, peekAnyIdentifier(file, 'sound'), `Play Sound actions must have a sound name here`);
                     const sound = project.definition.sounds[identifierToken.text];
                     if (!sound) {
-                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here`);
+                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here. Did you forget to define it with 'define sound ${identifierToken.text}'?`);
                     }
                     checkEndOfLine(file, `Play Sound actions must not have anything here after the sound name`);
                     parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID: sound.id });
@@ -1305,7 +1896,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Check actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Check actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
                     }
                     const comparison = parseComparison(file, `Check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Check actions must have a value specified here to compare against`));
@@ -1319,7 +1910,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Set actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Set actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
                     }
                     advance(file, peekKeyword(file, 'to'), `Set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Set actions must have a value specified here to store in the variable`));
@@ -1333,7 +1924,7 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Add actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Add actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
                     }
                     let key = undefined;
                     if (variable.type === 'map') {
@@ -1350,16 +1941,31 @@ const PARSER = (() => {
                     const variableID = variableToken.text;
                     const variable = project.definition.variables[variableID];
                     if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Subtract actions must have a defined global variable name here`);
+                        throw new ParseError(file, variableToken.range, `Subtract actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
                     }
                     checkEndOfLine(file, `Subtract actions must not have anything here after the value`);
                     parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null });
                 },
-            }, `Passage actions must start with a defined character's name or be`);
+            }, `Passage actions must start with a defined character's name (in which case, did you forget to define them with 'define character ${characterID}'?) or be`);
         }
     }
+    async function parseInclude(project, file, fileLookup) {
+        const pathToken = advance(file, peekString(file), `Include directives must have a file path here, enclosed in double-quotes, like '"chapter1.nvn"'`);
+        const path = processVariableValueOfType(file, pathToken, 'string', `Include directive file paths must be enclosed in double-quotes, like '"chapter1.nvn"'`).string;
+        const fullPath = `${project.path}/${path}`;
+        checkEndOfLine(file, `Include directives must not have anything here after the file path`);
+        await parseFile(project, fullPath, fileLookup);
+    }
+    function parseLocation(file, error) {
+        const location = parseIdentifierSelect(file, 'location', {
+            left: () => 'left',
+            right: () => 'right',
+            center: () => 'center',
+        }, error);
+        return location;
+    }
     function parseComparison(file, error) {
-        const comparison = parseKeywordSelect(file, {
+        const comparison = parseIdentifierSelect(file, 'comparison', {
             'is not less than or equal to': () => '>',
             'is less than or equal to': () => '<=',
             'is not less than': () => '>=',
@@ -1374,12 +1980,6 @@ const PARSER = (() => {
             'contains': () => 'C',
         }, error);
         return comparison;
-    }
-    async function parseInclude(project, file, fileLookup) {
-        const pathToken = advance(file, peekString(file), `Include directives must have a file path here, enclosed in double-quotes, like '"chapter1.nvn"'`);
-        const path = processVariableValueOfType(file, pathToken, 'string', `Include directive file paths must be enclosed in double-quotes, like '"chapter1.nvn"'`).string;
-        const fullPath = `${project.path}/${path}`;
-        await parseFile(project, fullPath, fileLookup);
     }
     async function parseLine(project, file, fileLookup) {
         if (!file.lines[file.cursor.row].trim().length) {
@@ -1458,7 +2058,6 @@ const PARSER = (() => {
     function isIdentifierChar(file, cursor) {
         return isAlpha(file, cursor) || isNumeric(file, cursor) || isChar(file, cursor, '_');
     }
-    // If the left-hand side of the character at this position is a word boundary
     function isWordBoundary(file, cursor) {
         if (isOutOfBounds(file, cursor))
             return true;
@@ -1507,13 +2106,13 @@ const PARSER = (() => {
         }
         return;
     }
-    function parseToken(file, type, row, start, end) {
+    function parseToken(file, type, row, start, end, subType) {
         const range = { row, start, end };
-        const token = { type, range, text: readRange(file, range) };
+        const token = { type, range, text: readRange(file, range), subType };
         return token;
     }
-    function peek(file, type, length) {
-        const token = parseToken(file, type, file.cursor.row, file.cursor.col, file.cursor.col + length);
+    function peek(file, type, length, subType) {
+        const token = parseToken(file, type, file.cursor.row, file.cursor.col, file.cursor.col + length, subType);
         return token;
     }
     function peekAny(file) {
@@ -1552,19 +2151,19 @@ const PARSER = (() => {
         }
         return null;
     }
-    function peekIdentifier(file, identifier) {
+    function peekIdentifier(file, identifier, subType) {
         if (isWord(file, file.cursor, identifier)) {
-            return peek(file, 'identifier', identifier.length);
+            return peek(file, 'identifier', identifier.length, subType);
         }
         return null;
     }
-    function peekAnyIdentifier(file) {
+    function peekAnyIdentifier(file, subType) {
         if (isIdentifierChar(file, file.cursor) && isWordBoundary(file, file.cursor)) {
             let cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
             while (isIdentifierChar(file, cursor)) {
                 cursor.col++;
             }
-            const token = peek(file, 'identifier', cursor.col - file.cursor.col);
+            const token = peek(file, 'identifier', cursor.col - file.cursor.col, subType);
             return token;
         }
         return null;
@@ -1612,13 +2211,13 @@ const PARSER = (() => {
         return null;
     }
     function peekVariableValue(file) {
-        return peekVariable(file) ?? peekNumber(file) ?? peekString(file) ?? peekIdentifier(file, 'a list') ?? peekIdentifier(file, 'a map') ?? peekIdentifier(file, 'yes') ?? peekIdentifier(file, 'no') ?? peekIdentifier(file, 'nothing') ?? null;
+        return peekVariable(file) ?? peekNumber(file) ?? peekString(file) ?? peekIdentifier(file, 'a list', 'value') ?? peekIdentifier(file, 'a map', 'value') ?? peekIdentifier(file, 'yes', 'value') ?? peekIdentifier(file, 'no', 'value') ?? peekIdentifier(file, 'nothing', 'value') ?? null;
     }
     function processVariableValue(file, token) {
         if (token.type === 'string')
-            return { string: JSON.parse(token.text) };
+            return { string: safeJsonParse(token.text, token.text) };
         else if (token.type === 'number')
-            return { number: JSON.parse(token.text) };
+            return { number: safeJsonParse(token.text, 0) };
         else if (token.type === 'variable')
             return { variable: token.text };
         else if (token.type === 'identifier') {
@@ -1709,5 +2308,16 @@ function waitForNextFrame() {
 }
 function tuple(...args) {
     return args;
+}
+function filterFalsy(v) {
+    return !!v;
+}
+function safeJsonParse(s, defaultValue) {
+    try {
+        return JSON.parse(s);
+    }
+    catch (e) {
+        return defaultValue;
+    }
 }
 //# sourceMappingURL=index.js.map

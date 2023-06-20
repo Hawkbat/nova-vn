@@ -214,11 +214,12 @@ const INTERFACE = (() => {
                 if (MONACO.isCodeEditorOpen()) {
                     MONACO.setCodeEditorOpen(false)
                 } else {
+                    MONACO.setCodeEditorOpen(true)
                     const project = INTERPRETER.getCurrentProject()
                     const story = INTERPRETER.getCurrentStory()
                     const action = INTERPRETER.getCurrentAction()
                     if (project && story && action) {
-                        MONACO.makeCodeEditor(project, project.files[action.range.file]!, action.range)
+                        MONACO.loadFile(project, project.files[action.range.file]!, action.range)
                     }
                 }
             } else {

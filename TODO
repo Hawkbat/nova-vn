@@ -1,0 +1,7 @@
+
+Saving promises need to be global to not trip over each other
+Add saving indicators to file list
+    Maybe fancy spinner with ::before and ::after circles and transform: rotate
+Move identifier resolution to validation pass, where possible
+Make error messages more descriptive to describe what the user should try to fix it
+Validate asset files (expressions, backdrops, sounds) actually exist

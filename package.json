@@ -6,7 +6,7 @@
   "scripts": {
     "tsbuild": "npx tsc",
     "tsbuild:watch": "npx tsc -w",
-    "run": "npx neu run",
+    "start": "npx neu run",
     "build": "node build.js"
   },
   "author": "Nova",

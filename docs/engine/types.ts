@@ -31,37 +31,37 @@ interface CharacterDefinition {
     name: string
     outfits: Partial<Record<string, OutfitDefinition>>
     variables: Partial<Record<string, VariableDefinition>>
+    range: FileRange
 }
 
 interface OutfitDefinition {
     id: string
     expressions: Partial<Record<string, ExpressionDefinition>>
+    range: FileRange
 }
 
 interface ExpressionDefinition {
     id: string
     path: string
+    range: FileRange
 }
 
 interface BackdropDefinition {
     id: string
     path: string
+    range: FileRange
 }
 
 interface SoundDefinition {
     id: string
     path: string
-}
-
-interface ChapterDefinition {
-    id: string
-    name: string
-    passages: PassageDefinition[]
+    range: FileRange
 }
 
 interface PassageDefinition {
     id: string
     actions: PassageAction[]
+    range: FileRange
 }
 
 interface VariableDefinition {
@@ -70,6 +70,7 @@ interface VariableDefinition {
     characterID?: string
     type: VariableValueType
     initialValue: VariableValue
+    range: FileRange
 }
 
 type VariableScope = 'global' | 'cast' | 'character'
@@ -176,6 +177,7 @@ class InterpreterError extends Error {
 }
 
 type ParseTokenType = 'unknown' | 'keyword' | 'identifier' | 'variable' | 'string' | 'number'
+type ParseTokenSubType = 'character' | 'outfit' | 'expression' | 'backdrop' | 'sound' | 'passage' | 'location' | 'comparison' | 'value'
 
 interface ParsePointer {
     row: number
@@ -190,6 +192,7 @@ interface ParseRange {
 
 interface ParseToken {
     type: ParseTokenType
+    subType?: ParseTokenSubType
     range: ParseRange
     text: string
 }
@@ -207,6 +210,7 @@ interface ProjectContext {
 interface FileContext {
     path: string
     lines: string[]
+    lineStates: ParseState[]
     tokens: ParseToken[]
     cursor: ParsePointer
     states: ParseState[]
@@ -224,4 +228,44 @@ interface ParseState {
 interface ChoiceOption {
     text: string
     onSelect: () => void | Promise<void>
+}
+
+type LanguageDefinitionNode = {
+    type: 'variable'
+    definition?: boolean
+} | {
+    type: 'identifier'
+    subType: LanguageDefinitionIdentifierType
+    definition?: boolean
+} | {
+    type: 'number'
+} | {
+    type: 'string'
+} | {
+    type: 'keyword'
+    keyword: string
+} | {
+    type: 'any'
+    any: LanguageDefinitionNode[]
+} | {
+    type: 'seq'
+    seq: LanguageDefinitionNode[]
+} | {
+    type: 'optional'
+    optional: LanguageDefinitionNode
+} | {
+    type: 'eol'
+}
+
+type LanguageDefinitionIdentifierType = ParseTokenSubType
+
+type PrimitiveLanguageDefinitionNode = Extract<LanguageDefinitionNode, { type: ParseTokenType }>
+
+type LanguageDefinitionSignature = PrimitiveLanguageDefinitionNode[]
+
+type LanguageDefinitionActiveSignatures = {
+    signatures: LanguageDefinitionSignature[]
+    signature: LanguageDefinitionSignature | null
+    signatureIndex: number
+    parameterIndex: number
 }

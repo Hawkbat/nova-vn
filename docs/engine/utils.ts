@@ -36,6 +36,18 @@ function tuple<T extends any[]>(...args: T) : T {
     return args
 }
 
+function filterFalsy<T>(v: T | null | undefined): v is T {
+    return !!v
+}
+
+function safeJsonParse<T>(s: string, defaultValue: T) {
+    try {
+        return JSON.parse(s) as T
+    } catch (e) {
+        return defaultValue
+    }
+}
+
 interface ExposedPromise<T> extends Promise<T> {
     resolve: (value: T | PromiseLike<T>) => void
     reject: (reason?: any) => void
