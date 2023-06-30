@@ -44,17 +44,31 @@ const INTERFACE = (() => {
         element.style.backgroundImage = `url(${expression.path})`
         MARKUP.characterBounds.append(element)
         characterElements[character.id] = element
+        moveCharacterRaw(character.id, location)
     }
 
     async function removeCharacter(character: CharacterDefinition, location: CharacterLocation) {
         const element = characterElements[character.id]!
         element.classList.add('hide')
+        moveCharacterRaw(character.id, location)
         await wait(CHARACTER_HIDE_DURATION)
         element.remove()
     }
 
     async function moveCharacter(character: CharacterDefinition, location: CharacterLocation) {
+        moveCharacterRaw(character.id, location)
         await wait(CHARACTER_MOVE_DURATION)
+    }
+
+    function moveCharacterRaw(characterID: string, location: CharacterLocation) {
+        const element = characterElements[characterID]!
+        const percentage: number = {
+            center: 0,
+            left: -50,
+            right: 50,
+            default: safeFloatParse(element.style.left, 0),
+        }[location]
+        element.style.left = `${percentage}%`
     }
     
     async function changeCharacterSprite(character: CharacterDefinition, outfit: OutfitDefinition, expression: ExpressionDefinition) {        
