@@ -100,9 +100,11 @@ type PassageAction = ({
 } | {
     type: 'backdropChange'
     backdropID: string
+    backdropRange: FileRange
 } | {
     type: 'playSound'
     soundID: string
+    soundRange: FileRange
 } | {
     type: 'narration'
     text: string
@@ -114,26 +116,34 @@ type PassageAction = ({
     type: 'characterEntry'
     characterID: string
     location: CharacterLocation
+    characterRange: FileRange
 } | {
     type: 'characterExit'
     characterID: string
     location: CharacterLocation
+    characterRange: FileRange
 } | {
     type: 'characterMove'
     characterID: string
     location: CharacterLocation
+    characterRange: FileRange
 } | {
     type: 'characterSpeech'
     characterID: string
     text: string
+    characterRange: FileRange
 } | {
     type: 'characterExpressionChange'
     characterID: string
     expressionID: string
+    characterRange: FileRange
+    expressionRange: FileRange
 } | {
     type: 'characterOutfitChange'
     characterID: string
     outfitID: string
+    characterRange: FileRange
+    outfitRange: FileRange
 } | {
     type: 'check'
     variableID: string
@@ -141,22 +151,30 @@ type PassageAction = ({
     value: VariableValue
     actions: PassageAction[]
     characterID: string | null
+    characterRange: FileRange | null
+    variableRange: FileRange
 } | {
     type: 'varSet'
     variableID: string
     value: VariableValue
     characterID: string | null
+    characterRange: FileRange | null
+    variableRange: FileRange
 } | {
     type: 'varAdd'
     variableID: string
     value: VariableValue
     key?: VariableValue
     characterID: string | null
+    characterRange: FileRange | null
+    variableRange: FileRange
 } | {
     type: 'varSubtract'
     variableID: string
     value: VariableValue
     characterID: string | null
+    characterRange: FileRange | null
+    variableRange: FileRange
 })
 
 type PassageActionType = PassageAction['type']
@@ -169,9 +187,16 @@ class ParseError extends Error {
     }
 }
 
+class ValidationError extends Error {
+    constructor(public file: FileContext, public range: ParseRange, public msg: string) {
+        super(`An error was identified while validating a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`)
+        this.name = 'ValidationError'
+    }
+}
+
 class InterpreterError extends Error {
     constructor(public file: FileContext, public range: ParseRange, public msg: string) {
-        super(`An error was identified while processing a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`)
+        super(`An error was identified while running a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`)
         this.name = 'InterpreterError'
     }
 }

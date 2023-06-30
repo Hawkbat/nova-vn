@@ -1,7 +1,29 @@
 
-Saving promises need to be global to not trip over each other
-Add saving indicators to file list
-    Maybe fancy spinner with ::before and ::after circles and transform: rotate
-Move identifier resolution to validation pass, where possible
+== SHORT-TERM ==
+
+Multi-outfit support is confusing, not sure how to help
+
 Make error messages more descriptive to describe what the user should try to fix it
-Validate asset files (expressions, backdrops, sounds) actually exist
+Variable interpolation in strings, like "You ate $cookieCount cookies"
+Autocomplete is broken in some contexts, need to debug
+
+== MEDIUM-TERM ==
+
+Document all commands and what they do, and surface that as both a "cheat sheet" document and in-app as hover and signature documentation
+Variable state inspector in editor
+Story metadata
+    Possibly as directives in story.nvn?
+    Should they be able to be changed in passages (like title?)
+        Maybe just subtitles/save titles
+Main menu
+Save files (save and load story state, export/import)
+"Rewind" to previous story states
+Fast forward/skip
+    Could have options to fast-forward through choices and through passages previously rewinded through
+
+== LONG-TERM ==
+
+Can we defer character identifier validation for character actions? Maybe if we can exhaustively eliminate the list of other actions first
+Multi-project support
+    On desktop, load list of projects by checking root folders for story.nvn files
+    On web, just auto-load "project" folder

@@ -1,17 +1,9 @@
 "use strict";
-const NETWORK_LOADER = async (path) => {
-    const response = await fetch(path);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch project file ${path}`);
-    }
-    const text = await response.text();
-    return text;
-};
 requestAnimationFrame(async () => {
     let project = null;
     if (!project) {
         try {
-            project = await PARSER.parseStory('project', NETWORK_LOADER);
+            project = await PARSER.parseStory('project');
         }
         catch (e) {
             if (String(e).includes('Failed to fetch project file')) {
@@ -23,13 +15,14 @@ requestAnimationFrame(async () => {
         }
     }
     if (!project) {
-        project = await PARSER.parseStory('engine/docs_project', NETWORK_LOADER);
+        project = await PARSER.parseStory('engine/docs_project');
     }
     try {
         await MONACO.loadProject(project);
         for (const file of Object.values(project.files)) {
             if (file?.errors.length) {
                 await MONACO.loadFile(project, file, file.errors[0].range);
+                MONACO.setCodeEditorOpen(true);
             }
         }
         await INTERPRETER.runProject(project);
@@ -39,6 +32,7 @@ requestAnimationFrame(async () => {
             console.error(e);
             e.file.errors.push(e);
             await MONACO.loadFile(project, e.file, e.range);
+            MONACO.setCodeEditorOpen(true);
         }
         else {
             throw e;
@@ -84,15 +78,28 @@ const INTERFACE = (() => {
         element.style.backgroundImage = `url(${expression.path})`;
         MARKUP.characterBounds.append(element);
         characterElements[character.id] = element;
+        moveCharacterRaw(character.id, location);
     }
     async function removeCharacter(character, location) {
         const element = characterElements[character.id];
         element.classList.add('hide');
+        moveCharacterRaw(character.id, location);
         await wait(CHARACTER_HIDE_DURATION);
         element.remove();
     }
     async function moveCharacter(character, location) {
+        moveCharacterRaw(character.id, location);
         await wait(CHARACTER_MOVE_DURATION);
+    }
+    function moveCharacterRaw(characterID, location) {
+        const element = characterElements[characterID];
+        const percentage = {
+            center: 0,
+            left: -50,
+            right: 50,
+            default: safeFloatParse(element.style.left, 0),
+        }[location];
+        element.style.left = `${percentage}%`;
     }
     async function changeCharacterSprite(character, outfit, expression) {
         const imgUrl = expression.path;
@@ -895,6 +902,16 @@ const MARKUP = (() => {
         textbox,
         menu,
         codeEditor);
+    function makeLoadingSpinner() {
+        const spinner = h("div", { className: "spinner" },
+            h("div", null),
+            h("div", null),
+            h("div", null),
+            h("div", null),
+            h("div", null),
+            h("div", null));
+        return spinner;
+    }
     document.body.append(main);
     return {
         currentBackdrop,
@@ -910,6 +927,7 @@ const MARKUP = (() => {
         caret,
         textbox,
         main,
+        makeLoadingSpinner,
     };
 })();
 /// <reference path="../../node_modules/monaco-editor/monaco.d.ts" />
@@ -921,6 +939,9 @@ const MONACO = (() => {
     let currentFile = null;
     let currentEditor = null;
     let fileListItems = {};
+    const savingPromises = {};
+    const savingTimes = {};
+    const savingSpinners = {};
     require.config({ paths: { 'vs': 'engine/monaco-editor' } });
     require(["vs/editor/editor.main"], () => {
         monaco.languages.register({ id: LANG_ID });
@@ -1248,10 +1269,12 @@ const MONACO = (() => {
             if (el)
                 el.remove();
         }
+        fileListItems = {};
         for (const file of Object.values(project.files)) {
             if (!file)
                 continue;
-            const el = h("div", { className: "file" }, file.path);
+            const el = h("div", { className: "file" },
+                h("label", null, file.path));
             el.addEventListener('click', () => {
                 makeCodeEditor(project, file, null);
             });
@@ -1287,14 +1310,12 @@ const MONACO = (() => {
         if (existingModel) {
             model = existingModel;
             if (model.getValue() !== value) {
-                console.log('File content mismatch; reload might not be triggered properly?');
+                console.log('File was edited during save process; keeping editor copy as-is');
                 //model.setValue(value)
             }
         }
         else {
             model = monaco.editor.createModel(value, LANG_ID, uri);
-            let savingPromise = null;
-            let saveTime = Date.now();
             let wasReset = false;
             model.onDidChangeContent(e => {
                 if (wasReset) {
@@ -1303,20 +1324,30 @@ const MONACO = (() => {
                 }
                 requestAnimationFrame(() => {
                     if (NATIVE.isEnabled()) {
-                        const currentSaveTime = saveTime;
-                        saveTime = currentSaveTime;
-                        savingPromise = (async () => {
+                        const currentSaveTime = Date.now();
+                        savingTimes[file.path] = currentSaveTime;
+                        if (!savingSpinners[file.path]) {
+                            const spinner = MARKUP.makeLoadingSpinner();
+                            fileListItems[file.path]?.appendChild(spinner);
+                            savingSpinners[file.path] = spinner;
+                        }
+                        savingPromises[file.path] = (async () => {
                             await wait(SAVE_DELAY);
-                            if (saveTime === currentSaveTime) {
+                            if (savingTimes[file.path] === currentSaveTime) {
                                 await NATIVE.saveFile(file.path, model.getValue());
-                                const newProject = await PARSER.parseStory(project.path, NETWORK_LOADER);
+                                const newProject = await PARSER.parseStory(project.path);
                                 await loadProject(newProject);
                                 const newFile = newProject.files[file.path];
                                 if (newFile) {
                                     await loadFile(newProject, newFile, null);
                                 }
+                                const spinner = savingSpinners[file.path];
+                                if (spinner) {
+                                    spinner.remove();
+                                    delete savingSpinners[file.path];
+                                }
+                                delete savingPromises[file.path];
                             }
-                            savingPromise = null;
                         })();
                     }
                     else {
@@ -1466,7 +1497,15 @@ const NATIVE = (() => {
 const PARSER = (() => {
     // The default in OSX TextEdit and Windows Notepad; editors where it's configurable usually can just normalize on spaces or tabs
     const TABS_TO_SPACES = 8;
-    async function parseStory(projectPath, fileLookup) {
+    const NETWORK_LOADER = async (path) => {
+        const response = await fetch(path);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch project file ${path}`);
+        }
+        const text = await response.text();
+        return text;
+    };
+    async function parseStory(projectPath) {
         const project = {
             definition: {
                 characters: {},
@@ -1479,8 +1518,8 @@ const PARSER = (() => {
             files: {},
         };
         const mainFilePath = `${projectPath}/story.nvn`;
-        await parseFile(project, mainFilePath, fileLookup);
-        await validateStory(project);
+        await parseFile(project, mainFilePath, NETWORK_LOADER);
+        await VALIDATOR.validateStory(project);
         return project;
     }
     async function parseFile(project, path, fileLookup) {
@@ -1500,48 +1539,6 @@ const PARSER = (() => {
             await parseLine(project, file, fileLookup);
         }
         return file;
-    }
-    async function validateStory(project) {
-        for (const passage of Object.values(project.definition.passages)) {
-            if (!passage)
-                continue;
-            await validateActionList(project, passage.actions);
-        }
-    }
-    async function validateActionList(project, actions) {
-        for (const action of actions) {
-            await validateAction(project, action);
-        }
-    }
-    async function validateAction(project, action) {
-        const file = project.files[action.range.file];
-        try {
-            const validationMap = {
-                goto: async (a) => {
-                    const passage = project.definition.passages[a.passageID];
-                    if (!passage) {
-                        throw new ParseError(file, a.passageRange, `Go-To actions must have a valid passage name here, but the passage specified here does not exist`);
-                    }
-                },
-                check: async (a) => {
-                    await validateActionList(project, a.actions);
-                },
-                option: async (a) => {
-                    await validateActionList(project, a.actions);
-                },
-            };
-            const validationFunc = validationMap[action.type];
-            if (validationFunc)
-                await validationFunc(action);
-        }
-        catch (e) {
-            if (e instanceof ParseError) {
-                file.errors.push(e);
-            }
-            else {
-                throw e;
-            }
-        }
     }
     function checkEndOfLine(file, error) {
         if (!isOutOfBounds(file, file.cursor)) {
@@ -1722,6 +1719,7 @@ const PARSER = (() => {
         const characterID = identifierToken?.text ?? '';
         const character = project.definition.characters[characterID];
         if (identifierToken && character) {
+            const characterRange = getFileRange(file, identifierToken);
             advance(file, identifierToken, '');
             const optionMap = {
                 enter: t => {
@@ -1733,7 +1731,7 @@ const PARSER = (() => {
                     else {
                         checkEndOfLine(file, `Character entry actions must not have anything here after the action name unless it's the word 'from' and a location, like 'from left'`);
                     }
-                    parent.actions.push({ type: 'characterEntry', range: getFileRange(file, t), characterID, location });
+                    parent.actions.push({ type: 'characterEntry', range: getFileRange(file, t), characterID, location, characterRange });
                 },
                 enters: t => optionMap.enter(t),
                 exit: t => {
@@ -1745,54 +1743,44 @@ const PARSER = (() => {
                     else {
                         checkEndOfLine(file, `Character exit actions must not have anything here after the action name unless it's the word 'to' and a location, like 'to left'`);
                     }
-                    parent.actions.push({ type: 'characterExit', range: getFileRange(file, t), characterID, location });
+                    parent.actions.push({ type: 'characterExit', range: getFileRange(file, t), characterID, location, characterRange });
                 },
                 exits: t => optionMap.exit(t),
                 move: t => {
                     tryAdvance(file, peekKeyword(file, 'to'));
                     const location = parseLocation(file, `Character movement location must be`);
                     checkEndOfLine(file, `Character movement actions must not have anything here after the location`);
-                    parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location });
+                    parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location, characterRange });
                 },
                 moves: t => optionMap.move(t),
                 say: t => {
                     const text = processVariableValueOfType(file, advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`).string;
                     checkEndOfLine(file, `Character speech actions must not have anything here after the speech text`);
-                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text });
+                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text, characterRange });
                 },
                 says: t => optionMap.say(t),
                 emote: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'expression'), `Character expression change actions must have an expression name here`);
-                    const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === identifierToken.text);
-                    if (!expression) {
-                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here. Did you forget to define it with 'with expression ${identifierToken.text}' under an outfit definition?`);
-                    }
+                    const expressionID = identifierToken.text;
                     checkEndOfLine(file, `Character expression change actions must not have anything here after the expression name`);
-                    parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID: expression.id });
+                    parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID, characterRange, expressionRange: getFileRange(file, identifierToken) });
                 },
                 emotes: t => optionMap.emote(t),
                 wear: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'outfit'), `Character outfit change actions must have an outfit name here`);
-                    const outfit = Object.values(character.outfits).find(o => o?.id === identifierToken.text);
-                    if (!outfit) {
-                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here. Did you forget to define it with 'has outfit ${identifierToken.text}' under a character definition?`);
-                    }
+                    const outfitID = identifierToken.text;
                     checkEndOfLine(file, `Character outfit change actions must not have anything here after the outfit name`);
-                    parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID: outfit.id });
+                    parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID, characterRange, outfitRange: getFileRange(file, identifierToken) });
                 },
                 wears: t => optionMap.wear(t),
                 check: t => {
                     advance(file, peekKeyword(file, 'if'), `Character check actions must start with the word 'if' here`);
                     const variableToken = advance(file, peekVariable(file), `Character check actions must have a variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character check actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
-                    }
                     const comparison = parseComparison(file, `Character check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character check actions must have a value specified here to compare against`));
                     checkEndOfLine(file, `Character check actions must not have anything here after the value`);
-                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID };
+                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID, characterRange, variableRange: getFileRange(file, variableToken) };
                     parent.actions.push(checkAction);
                     file.states.push({ indent, passage, actionContainer: checkAction });
                 },
@@ -1800,14 +1788,10 @@ const PARSER = (() => {
                 set: t => {
                     const variableToken = advance(file, peekVariable(file), `Character set actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character set actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
-                    }
                     advance(file, peekKeyword(file, 'to'), `Character set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character set actions must have a value specified here to store in the variable`));
                     checkEndOfLine(file, `Character set actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID });
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID, characterRange, variableRange: getFileRange(file, variableToken) });
                 },
                 sets: t => optionMap.set(t),
                 add: t => {
@@ -1815,17 +1799,12 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'to'), `Character add actions must have the word 'to' here`);
                     const variableToken = advance(file, peekVariable(file), `Character add actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character add actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
-                    }
                     let key = undefined;
-                    if (variable.type === 'map') {
-                        advance(file, peekKeyword(file, 'as'), `Character add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`);
+                    if (tryAdvance(file, peekKeyword(file, 'as'))) {
                         key = processVariableValue(file, advance(file, peekVariableValue(file), `Character add actions must have a key name here after the word 'as', like 'as "foo"'`));
                     }
                     checkEndOfLine(file, `Character add actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID });
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID, characterRange, variableRange: getFileRange(file, variableToken) });
                 },
                 adds: t => optionMap.add(t),
                 subtract: t => {
@@ -1833,12 +1812,8 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'from'), `Character subtract actions must have the word 'form' here`);
                     const variableToken = advance(file, peekVariable(file), `Character subtract actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID];
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character subtract actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`);
-                    }
                     checkEndOfLine(file, `Character subtract actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID });
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID, characterRange, variableRange: getFileRange(file, variableToken) });
                 },
                 subtracts: t => optionMap.subtract(t),
             };
@@ -1862,21 +1837,15 @@ const PARSER = (() => {
                 },
                 display: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'backdrop'), `Display actions must have a backdrop name here`);
-                    const backdrop = project.definition.backdrops[identifierToken.text];
-                    if (!backdrop) {
-                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here. Did you forget to define it with 'define backdrop ${identifierToken.text}'?`);
-                    }
+                    const backdropID = identifierToken.text;
                     checkEndOfLine(file, `Display actions must not have anything here after the backdrop name`);
-                    parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID: backdrop.id });
+                    parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID, backdropRange: getFileRange(file, identifierToken) });
                 },
                 play: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'sound'), `Play Sound actions must have a sound name here`);
-                    const sound = project.definition.sounds[identifierToken.text];
-                    if (!sound) {
-                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here. Did you forget to define it with 'define sound ${identifierToken.text}'?`);
-                    }
+                    const soundID = identifierToken.text;
                     checkEndOfLine(file, `Play Sound actions must not have anything here after the sound name`);
-                    parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID: sound.id });
+                    parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID, soundRange: getFileRange(file, identifierToken) });
                 },
                 narrate: t => {
                     const text = processVariableValueOfType(file, advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`).string;
@@ -1894,59 +1863,42 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'if'), `Check actions must start with the word 'if' here`);
                     const variableToken = advance(file, peekVariable(file), `Check actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = project.definition.variables[variableID];
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Check actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
-                    }
                     const comparison = parseComparison(file, `Check actions must have a comparison here that is`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Check actions must have a value specified here to compare against`));
                     checkEndOfLine(file, `Check actions must not have anything here after the value`);
-                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID: null };
+                    const checkAction = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) };
                     parent.actions.push(checkAction);
                     file.states.push({ indent, passage, actionContainer: checkAction });
                 },
                 set: t => {
                     const variableToken = advance(file, peekVariable(file), `Set actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = project.definition.variables[variableID];
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Set actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
-                    }
                     advance(file, peekKeyword(file, 'to'), `Set actions must have the word 'to' here`);
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Set actions must have a value specified here to store in the variable`));
                     checkEndOfLine(file, `Set actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID: null });
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) });
                 },
                 add: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a value specified here to add to the variable`));
                     advance(file, peekKeyword(file, 'to'), `Add actions must have the word 'to' here`);
                     const variableToken = advance(file, peekVariable(file), `Add actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = project.definition.variables[variableID];
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Add actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
-                    }
                     let key = undefined;
-                    if (variable.type === 'map') {
-                        advance(file, peekKeyword(file, 'as'), `Add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`);
+                    if (tryAdvance(file, peekKeyword(file, 'as'))) {
                         key = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a key name here after the word 'as', like 'as "foo"'`));
                     }
                     checkEndOfLine(file, `Add actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, characterID: null });
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) });
                 },
                 subtract: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Subtract actions must have a value specified here to subtract from the variable`));
                     advance(file, peekKeyword(file, 'from'), `Subtract actions must have the word 'from' here`);
                     const variableToken = advance(file, peekVariable(file), `Subtract actions must have a global variable name that starts with the '$' symbol here`);
                     const variableID = variableToken.text;
-                    const variable = project.definition.variables[variableID];
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Subtract actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`);
-                    }
                     checkEndOfLine(file, `Subtract actions must not have anything here after the value`);
-                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null });
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) });
                 },
-            }, `Passage actions must start with a defined character's name (in which case, did you forget to define them with 'define character ${characterID}'?) or be`);
+            }, `Passage actions must start with a defined character's name (in which case, did you forget to define them with 'define character ${characterID}' first?) or be`);
         }
     }
     async function parseInclude(project, file, fileLookup) {
@@ -2119,6 +2071,9 @@ const PARSER = (() => {
         const valueToken = peekVariableValue(file);
         if (valueToken)
             return valueToken;
+        const variableToken = peekVariable(file);
+        if (variableToken)
+            return variableToken;
         if (isIdentifierChar(file, file.cursor) && isWordBoundary(file, file.cursor)) {
             const cursor = { ...file.cursor };
             do {
@@ -2261,12 +2216,24 @@ class ParseError extends Error {
         this.name = 'ParseError';
     }
 }
+class ValidationError extends Error {
+    file;
+    range;
+    msg;
+    constructor(file, range, msg) {
+        super(`An error was identified while validating a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`);
+        this.file = file;
+        this.range = range;
+        this.msg = msg;
+        this.name = 'ValidationError';
+    }
+}
 class InterpreterError extends Error {
     file;
     range;
     msg;
     constructor(file, range, msg) {
-        super(`An error was identified while processing a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`);
+        super(`An error was identified while running a story file: ${msg}\nin ${file.path} at ${range.row}:${range.start}\n${file.lines[range.row]}\n${' '.repeat(range.start)}${'^'.repeat(Math.max(1, range.end - range.start))}`);
         this.file = file;
         this.range = range;
         this.msg = msg;
@@ -2320,4 +2287,199 @@ function safeJsonParse(s, defaultValue) {
         return defaultValue;
     }
 }
+function safeFloatParse(s, defaultValue) {
+    const v = parseFloat(s);
+    if (Number.isNaN(v))
+        return defaultValue;
+    return v;
+}
+const VALIDATOR = (() => {
+    async function validateStory(project) {
+        for (const passage of Object.values(project.definition.passages).filter(filterFalsy)) {
+            await validatePassage(project, passage);
+        }
+        for (const character of Object.values(project.definition.characters).filter(filterFalsy)) {
+            await validateCharacter(project, character);
+        }
+        for (const backdrop of Object.values(project.definition.backdrops).filter(filterFalsy)) {
+            await validateBackdrop(project, backdrop);
+        }
+        for (const sound of Object.values(project.definition.sounds).filter(filterFalsy)) {
+            await validateSound(project, sound);
+        }
+    }
+    async function validatePassage(project, passage) {
+        await validateActionList(project, passage.actions);
+    }
+    async function validateActionList(project, actions) {
+        for (const action of actions) {
+            await validateAction(project, action);
+        }
+    }
+    function validateCharacterAction(project, file, characterID, characterRange, actionName) {
+        const character = project.definition.characters[characterID];
+        if (!character) {
+            throw new ValidationError(file, characterRange, `${actionName} actions must have a defined character name here. Did you forget to define it else where with 'define character ${characterID}'?`);
+        }
+        return character;
+    }
+    async function validateAction(project, action) {
+        const file = project.files[action.range.file];
+        try {
+            const validationMap = {
+                backdropChange: async (a) => {
+                    const backdrop = project.definition.backdrops[a.backdropID];
+                    if (!backdrop) {
+                        throw new ValidationError(file, a.backdropRange, `Display actions must have a defined backdrop name here. Did you forget to define it elsewhere with 'define backdrop ${a.backdropID}'?`);
+                    }
+                },
+                playSound: async (a) => {
+                    const sound = project.definition.sounds[a.soundID];
+                    if (!sound) {
+                        throw new ValidationError(file, a.soundRange, `Play Sound actions must have a defined sound name here. Did you forget to define it elsewhere with 'define sound ${a.soundID}'?`);
+                    }
+                },
+                goto: async (a) => {
+                    const passage = project.definition.passages[a.passageID];
+                    if (!passage) {
+                        throw new ValidationError(file, a.passageRange, `Go-To actions must have a valid passage name here, but the passage specified here does not exist. Did you forget to define it elsewhere with 'define passage ${a.passageID}'?`);
+                    }
+                },
+                check: async (a) => {
+                    if (a.characterID && a.characterRange) {
+                        const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character check');
+                        const variable = character.variables[a.variableID] ?? project.definition.variables[a.variableID];
+                        if (!variable || variable.scope === 'global') {
+                            throw new ValidationError(file, a.variableRange, `Character check actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${a.variableID}' under a character definition?`);
+                        }
+                    }
+                    else {
+                        const variable = project.definition.variables[a.variableID];
+                        if (!variable || variable.scope !== 'global') {
+                            throw new ValidationError(file, a.variableRange, `Check actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${a.variableID}'?`);
+                        }
+                    }
+                    await validateActionList(project, a.actions);
+                },
+                varSet: async (a) => {
+                    if (a.characterID && a.characterRange) {
+                        const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character set');
+                        const variable = character.variables[a.variableID] ?? project.definition.variables[a.variableID];
+                        if (!variable || variable.scope === 'global') {
+                            throw new ValidationError(file, a.variableRange, `Character set actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${a.variableID}' under a character definition?`);
+                        }
+                    }
+                    else {
+                        const variable = project.definition.variables[a.variableID];
+                        if (!variable || variable.scope !== 'global') {
+                            throw new ValidationError(file, a.variableRange, `Set actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${a.variableID}'?`);
+                        }
+                    }
+                },
+                varAdd: async (a) => {
+                    if (a.characterID && a.characterRange) {
+                        const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character add');
+                        const variable = character.variables[a.variableID] ?? project.definition.variables[a.variableID];
+                        if (!variable || variable.scope === 'global') {
+                            throw new ValidationError(file, a.variableRange, `Character add actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${a.variableID}' under a character definition?`);
+                        }
+                        if (variable.type === 'map' && !a.key) {
+                            throw new ValidationError(file, a.range, `Character add actions for map variables must have a key name at the end after the word 'as', like 'as "foo"'`);
+                        }
+                    }
+                    else {
+                        const variable = project.definition.variables[a.variableID];
+                        if (!variable || variable.scope !== 'global') {
+                            throw new ValidationError(file, a.variableRange, `Add actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${a.variableID}'?`);
+                        }
+                        if (variable.type === 'map' && !a.key) {
+                            throw new ValidationError(file, a.range, `Add actions for map variables must have a key name at the end after the word 'as', like 'as "foo"'`);
+                        }
+                    }
+                },
+                varSubtract: async (a) => {
+                    if (a.characterID && a.characterRange) {
+                        const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character subtract');
+                        const variable = character.variables[a.variableID] ?? project.definition.variables[a.variableID];
+                        if (!variable || variable.scope === 'global') {
+                            throw new ValidationError(file, a.variableRange, `Character subtract actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${a.variableID}' under a character definition?`);
+                        }
+                    }
+                    else {
+                        const variable = project.definition.variables[a.variableID];
+                        if (!variable || variable.scope !== 'global') {
+                            throw new ValidationError(file, a.variableRange, `Subtract actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${a.variableID}'?`);
+                        }
+                    }
+                },
+                characterExpressionChange: async (a) => {
+                    const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character expression change');
+                    const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === a.expressionID);
+                    if (!expression) {
+                        throw new ValidationError(file, a.expressionRange, `Character expression change actions must have a defined expression name here. Did you forget to define it with 'with expression ${a.expressionID}' under an outfit definition for character '${a.characterID}'?`);
+                    }
+                },
+                characterOutfitChange: async (a) => {
+                    const character = validateCharacterAction(project, file, a.characterID, a.characterRange, 'Character outfit change');
+                    const outfit = Object.values(character.outfits).find(o => o?.id === a.outfitID);
+                    if (!outfit) {
+                        throw new ValidationError(file, a.outfitRange, `Character outfit change actions must have a defined outfit name here. Did you forget to define it with 'has outfit ${a.outfitID}' under the character definition for '${a.characterID}'?`);
+                    }
+                },
+                option: async (a) => {
+                    await validateActionList(project, a.actions);
+                },
+            };
+            const validationFunc = validationMap[action.type];
+            if (validationFunc)
+                await validationFunc(action);
+        }
+        catch (e) {
+            if (e instanceof ValidationError) {
+                file.errors.push(e);
+            }
+            else {
+                throw e;
+            }
+        }
+    }
+    async function validateCharacter(project, character) {
+        for (const outfit of Object.values(character.outfits).filter(filterFalsy)) {
+            await validateOutfit(project, outfit);
+        }
+    }
+    async function validateOutfit(project, outfit) {
+        for (const expression of Object.values(outfit.expressions).filter(filterFalsy)) {
+            await validateExpression(project, expression);
+        }
+    }
+    async function validateExpression(project, expression) {
+        const file = project.files[expression.range.file];
+        if (!await checkFileExists(expression.path)) {
+            file.errors.push(new ValidationError(file, expression.range, `The image file for this expression ('${expression.path}') does not exist! Did you move or rename it?`));
+        }
+    }
+    async function validateBackdrop(project, backdrop) {
+        const file = project.files[backdrop.range.file];
+        if (!await checkFileExists(backdrop.path)) {
+            file.errors.push(new ValidationError(file, backdrop.range, `The image file for this backdrop ('${backdrop.path}') does not exist! Did you move or rename it?`));
+        }
+    }
+    async function validateSound(project, sound) {
+        const file = project.files[sound.range.file];
+        if (!await checkFileExists(sound.path)) {
+            file.errors.push(new ValidationError(file, sound.range, `The audio file for this sound ('${sound.path}') does not exist! Did you move or rename it?`));
+        }
+    }
+    async function checkFileExists(path) {
+        const response = await fetch(path);
+        if (!response.ok) {
+            return false;
+        }
+        return true;
+    }
+    return {
+        validateStory,
+    };
+})();
 //# sourceMappingURL=index.js.map

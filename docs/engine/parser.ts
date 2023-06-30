@@ -3,7 +3,16 @@ const PARSER = (() => {
     // The default in OSX TextEdit and Windows Notepad; editors where it's configurable usually can just normalize on spaces or tabs
     const TABS_TO_SPACES = 8
 
-    async function parseStory(projectPath: string, fileLookup: (path: string) => Promise<string>) {
+    const NETWORK_LOADER = async (path: string) => {
+        const response = await fetch(path)
+        if (!response.ok) {
+            throw new Error(`Failed to fetch project file ${path}`)
+        }
+        const text = await response.text()
+        return text
+    }
+
+    async function parseStory(projectPath: string) {
         const project: ProjectContext = {
             definition: {
                 characters: {},
@@ -16,8 +25,8 @@ const PARSER = (() => {
             files: {},
         }
         const mainFilePath = `${projectPath}/story.nvn`
-        await parseFile(project, mainFilePath, fileLookup)
-        await validateStory(project)
+        await parseFile(project, mainFilePath, NETWORK_LOADER)
+        await VALIDATOR.validateStory(project)
         return project
     }
 
@@ -38,47 +47,6 @@ const PARSER = (() => {
             await parseLine(project, file, fileLookup)
         }
         return file
-    }
-
-    async function validateStory(project: ProjectContext) {
-        for (const passage of Object.values(project.definition.passages)) {
-            if (!passage) continue
-            await validateActionList(project, passage.actions)
-        }
-    }
-
-    async function validateActionList(project: ProjectContext, actions: PassageAction[]) {
-        for (const action of actions) {
-            await validateAction(project, action)
-        }
-    }
-
-    async function validateAction(project: ProjectContext, action: PassageAction) {
-        const file = project.files[action.range.file]!
-        try {
-            const validationMap: Partial<{ [K in PassageActionType]: (action: PassageActionOfType<K>) => Promise<void> }> = {
-                goto: async a => {
-                    const passage = project.definition.passages[a.passageID]
-                    if (!passage) {
-                        throw new ParseError(file, a.passageRange, `Go-To actions must have a valid passage name here, but the passage specified here does not exist`)
-                    }
-                },
-                check: async a => {
-                    await validateActionList(project, a.actions)
-                },
-                option: async a => {
-                    await validateActionList(project, a.actions)
-                },
-            }
-            const validationFunc = validationMap[action.type]
-            if (validationFunc) await validationFunc(action as any)
-        } catch (e) {
-            if (e instanceof ParseError) {
-                file.errors.push(e)
-            } else {
-                throw e
-            }
-        }
     }
 
     function checkEndOfLine(file: FileContext, error: string) {
@@ -267,6 +235,7 @@ const PARSER = (() => {
         const characterID = identifierToken?.text ?? ''
         const character = project.definition.characters[characterID]
         if (identifierToken && character) {
+            const characterRange = getFileRange(file, identifierToken)
             advance(file, identifierToken, '')
             const optionMap: Record<string, (token: ParseToken) => void> = {
                 enter: t => {
@@ -277,7 +246,7 @@ const PARSER = (() => {
                     } else {
                         checkEndOfLine(file, `Character entry actions must not have anything here after the action name unless it's the word 'from' and a location, like 'from left'`)
                     }
-                    parent.actions.push({ type: 'characterEntry', range: getFileRange(file, t), characterID, location })
+                    parent.actions.push({ type: 'characterEntry', range: getFileRange(file, t), characterID, location, characterRange })
                 },
                 enters: t => optionMap.enter(t),
                 exit: t => {
@@ -288,54 +257,44 @@ const PARSER = (() => {
                     } else {
                         checkEndOfLine(file, `Character exit actions must not have anything here after the action name unless it's the word 'to' and a location, like 'to left'`)
                     }
-                    parent.actions.push({ type: 'characterExit', range: getFileRange(file, t), characterID, location })
+                    parent.actions.push({ type: 'characterExit', range: getFileRange(file, t), characterID, location, characterRange })
                 },
                 exits: t => optionMap.exit(t),
                 move: t => {
                     tryAdvance(file, peekKeyword(file, 'to'))
                     const location = parseLocation(file, `Character movement location must be`)
                     checkEndOfLine(file, `Character movement actions must not have anything here after the location`)
-                    parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location })
+                    parent.actions.push({ type: 'characterMove', range: getFileRange(file, t), characterID, location, characterRange })
                 },
                 moves: t => optionMap.move(t),
                 say: t => {
                     const text = processVariableValueOfType(file, advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`).string
                     checkEndOfLine(file, `Character speech actions must not have anything here after the speech text`)
-                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text })
+                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text, characterRange })
                 },
                 says: t => optionMap.say(t),
                 emote: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'expression'), `Character expression change actions must have an expression name here`)
-                    const expression = Object.values(character.outfits).flatMap(o => Object.values(o?.expressions ?? [])).find(e => e?.id === identifierToken.text)
-                    if (!expression) {
-                        throw new ParseError(file, identifierToken.range, `Character expression change actions must have a defined expression name here. Did you forget to define it with 'with expression ${identifierToken.text}' under an outfit definition?`)
-                    }
+                    const expressionID = identifierToken.text
                     checkEndOfLine(file, `Character expression change actions must not have anything here after the expression name`)
-                    parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID: expression.id })
+                    parent.actions.push({ type: 'characterExpressionChange', range: getFileRange(file, t), characterID, expressionID, characterRange, expressionRange: getFileRange(file, identifierToken) })
                 },
                 emotes: t => optionMap.emote(t),
                 wear: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'outfit'), `Character outfit change actions must have an outfit name here`)
-                    const outfit = Object.values(character.outfits).find(o => o?.id === identifierToken.text)
-                    if (!outfit) {
-                        throw new ParseError(file, identifierToken.range, `Character outfit change actions must have a defined outfit name here. Did you forget to define it with 'has outfit ${identifierToken.text}' under a character definition?`)
-                    }
+                    const outfitID = identifierToken.text
                     checkEndOfLine(file, `Character outfit change actions must not have anything here after the outfit name`)
-                    parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID: outfit.id })
+                    parent.actions.push({ type: 'characterOutfitChange', range: getFileRange(file, t), characterID, outfitID, characterRange, outfitRange: getFileRange(file, identifierToken) })
                 },
                 wears: t => optionMap.wear(t),
                 check: t => {
                     advance(file, peekKeyword(file, 'if'), `Character check actions must start with the word 'if' here`)
                     const variableToken = advance(file, peekVariable(file), `Character check actions must have a variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID]
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character check actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`)
-                    }
                     const comparison = parseComparison(file, `Character check actions must have a comparison here that is`)
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character check actions must have a value specified here to compare against`))
                     checkEndOfLine(file, `Character check actions must not have anything here after the value`)
-                    const checkAction: PassageActionOfType<'check'> = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID }
+                    const checkAction: PassageActionOfType<'check'> = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID, characterRange, variableRange: getFileRange(file, variableToken) }
                     parent.actions.push(checkAction)
                     file.states.push({ indent, passage, actionContainer: checkAction })
                 },
@@ -343,14 +302,10 @@ const PARSER = (() => {
                 set: t => {
                     const variableToken = advance(file, peekVariable(file), `Character set actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID]
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character set actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`)
-                    }
                     advance(file, peekKeyword(file, 'to'), `Character set actions must have the word 'to' here`)
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Character set actions must have a value specified here to store in the variable`))
                     checkEndOfLine(file, `Character set actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID })
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID, characterRange, variableRange: getFileRange(file, variableToken) })
                 },
                 sets: t => optionMap.set(t),
                 add: t => {
@@ -358,17 +313,12 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'to'), `Character add actions must have the word 'to' here`)
                     const variableToken = advance(file, peekVariable(file), `Character add actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID]
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character add actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`)
-                    }
                     let key: VariableValue | undefined = undefined
-                    if (variable.type === 'map') {
-                        advance(file, peekKeyword(file, 'as'), `Character add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`)
+                    if (tryAdvance(file, peekKeyword(file, 'as'))) {
                         key = processVariableValue(file, advance(file, peekVariableValue(file), `Character add actions must have a key name here after the word 'as', like 'as "foo"'`))
                     }
                     checkEndOfLine(file, `Character add actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID })
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID, characterRange, variableRange: getFileRange(file, variableToken) })
                 },
                 adds: t => optionMap.add(t),
                 subtract: t => {
@@ -376,12 +326,8 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'from'), `Character subtract actions must have the word 'form' here`)
                     const variableToken = advance(file, peekVariable(file), `Character subtract actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = character.variables[variableID] ?? project.definition.variables[variableID]
-                    if (!variable || variable.scope === 'global') {
-                        throw new ParseError(file, variableToken.range, `Character subtract actions must have a defined character or cast variable name here. Did you forget to define it elsewhere with 'has variable ${variableID}' under a character definition?`)
-                    }
                     checkEndOfLine(file, `Character subtract actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID })
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID, characterRange, variableRange: getFileRange(file, variableToken) })
                 },
                 subtracts: t => optionMap.subtract(t),
             }
@@ -404,21 +350,15 @@ const PARSER = (() => {
                 },
                 display: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'backdrop'), `Display actions must have a backdrop name here`)
-                    const backdrop = project.definition.backdrops[identifierToken.text]
-                    if (!backdrop) {
-                        throw new ParseError(file, identifierToken.range, `Display actions must have a defined backdrop name here. Did you forget to define it with 'define backdrop ${identifierToken.text}'?`)
-                    }
+                    const backdropID = identifierToken.text
                     checkEndOfLine(file, `Display actions must not have anything here after the backdrop name`)
-                    parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID: backdrop.id })
+                    parent.actions.push({ type: 'backdropChange', range: getFileRange(file, t), backdropID, backdropRange: getFileRange(file, identifierToken) })
                 },
                 play: t => {
                     const identifierToken = advance(file, peekAnyIdentifier(file, 'sound'), `Play Sound actions must have a sound name here`)
-                    const sound = project.definition.sounds[identifierToken.text]
-                    if (!sound) {
-                        throw new ParseError(file, identifierToken.range, `Play Sound actions must have a defined sound name here. Did you forget to define it with 'define sound ${identifierToken.text}'?`)
-                    }
+                    const soundID = identifierToken.text
                     checkEndOfLine(file, `Play Sound actions must not have anything here after the sound name`)
-                    parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID: sound.id })
+                    parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID, soundRange: getFileRange(file, identifierToken) })
                 },
                 narrate: t => {
                     const text = processVariableValueOfType(file, advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`).string
@@ -436,59 +376,42 @@ const PARSER = (() => {
                     advance(file, peekKeyword(file, 'if'), `Check actions must start with the word 'if' here`)
                     const variableToken = advance(file, peekVariable(file), `Check actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = project.definition.variables[variableID]
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Check actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`)
-                    }
                     const comparison = parseComparison(file, `Check actions must have a comparison here that is`)
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Check actions must have a value specified here to compare against`))
                     checkEndOfLine(file, `Check actions must not have anything here after the value`)
-                    const checkAction: PassageActionOfType<'check'> = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID: null }
+                    const checkAction: PassageActionOfType<'check'> = { type: 'check', range: getFileRange(file, t), variableID, comparison, value, actions: [], characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) }
                     parent.actions.push(checkAction)
                     file.states.push({ indent, passage, actionContainer: checkAction })
                 },
                 set: t => {
                     const variableToken = advance(file, peekVariable(file), `Set actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = project.definition.variables[variableID]
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Set actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`)
-                    }
                     advance(file, peekKeyword(file, 'to'), `Set actions must have the word 'to' here`)
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Set actions must have a value specified here to store in the variable`))
                     checkEndOfLine(file, `Set actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID: null })
+                    parent.actions.push({ type: 'varSet', range: getFileRange(file, t), variableID, value, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) })
                 },
                 add: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a value specified here to add to the variable`))
                     advance(file, peekKeyword(file, 'to'), `Add actions must have the word 'to' here`)
                     const variableToken = advance(file, peekVariable(file), `Add actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = project.definition.variables[variableID]
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Add actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`)
-                    }
                     let key: VariableValue | undefined = undefined
-                    if (variable.type === 'map') {
-                        advance(file, peekKeyword(file, 'as'), `Add actions for map variables must have a key name here after the word 'as', like 'as "foo"'`)
+                    if (tryAdvance(file, peekKeyword(file, 'as'))) {
                         key = processVariableValue(file, advance(file, peekVariableValue(file), `Add actions must have a key name here after the word 'as', like 'as "foo"'`))
                     }
                     checkEndOfLine(file, `Add actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, characterID: null })
+                    parent.actions.push({ type: 'varAdd', range: getFileRange(file, t), variableID, value, key, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) })
                 },
                 subtract: t => {
                     const value = processVariableValue(file, advance(file, peekVariableValue(file), `Subtract actions must have a value specified here to subtract from the variable`))
                     advance(file, peekKeyword(file, 'from'), `Subtract actions must have the word 'from' here`)
                     const variableToken = advance(file, peekVariable(file), `Subtract actions must have a global variable name that starts with the '$' symbol here`)
                     const variableID = variableToken.text
-                    const variable = project.definition.variables[variableID]
-                    if (!variable || variable.scope !== 'global') {
-                        throw new ParseError(file, variableToken.range, `Subtract actions must have a defined global variable name here. Did you forget to define it with 'define global variable ${variableID}'?`)
-                    }
                     checkEndOfLine(file, `Subtract actions must not have anything here after the value`)
-                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null })
+                    parent.actions.push({ type: 'varSubtract', range: getFileRange(file, t), variableID, value, characterID: null, characterRange: null, variableRange: getFileRange(file, variableToken) })
                 },
-            }, `Passage actions must start with a defined character's name (in which case, did you forget to define them with 'define character ${characterID}'?) or be`)
+            }, `Passage actions must start with a defined character's name (in which case, did you forget to define them with 'define character ${characterID}' first?) or be`)
         }
     }
 
@@ -658,6 +581,8 @@ const PARSER = (() => {
     function peekAny(file: FileContext) {
         const valueToken = peekVariableValue(file)
         if (valueToken) return valueToken
+        const variableToken = peekVariable(file)
+        if (variableToken) return variableToken
         if (isIdentifierChar(file, file.cursor) && isWordBoundary(file, file.cursor)) {
             const cursor = { ...file.cursor }
             do {
