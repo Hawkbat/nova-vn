@@ -48,6 +48,12 @@ function safeJsonParse<T>(s: string, defaultValue: T) {
     }
 }
 
+function safeFloatParse(s: string, defaultValue: number) {
+    const v = parseFloat(s)
+    if (Number.isNaN(v)) return defaultValue
+    return v
+}
+
 interface ExposedPromise<T> extends Promise<T> {
     resolve: (value: T | PromiseLike<T>) => void
     reject: (reason?: any) => void

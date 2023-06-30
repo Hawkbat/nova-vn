@@ -10,6 +10,10 @@ const MONACO = (() => {
     let currentEditor: monaco.editor.IStandaloneCodeEditor | null = null
     let fileListItems: Partial<Record<string, HTMLDivElement>> = {}
 
+    const savingPromises: Partial<Record<string, Promise<void>>> = {}
+    const savingTimes: Partial<Record<string, number>> = {}
+    const savingSpinners: Partial<Record<string, HTMLDivElement>> = {}
+
     require.config({ paths: { 'vs': 'engine/monaco-editor' } })
 
     require(["vs/editor/editor.main"], () => {
@@ -324,9 +328,10 @@ const MONACO = (() => {
         for (const el of Object.values(fileListItems)) {
             if (el) el.remove()
         }
+        fileListItems = {}
         for (const file of Object.values(project.files)) {
             if (!file) continue
-            const el = <div className="file">{file.path}</div> as HTMLDivElement
+            const el = <div className="file"><label>{file.path}</label></div> as HTMLDivElement
             el.addEventListener('click', () => {
                 makeCodeEditor(project, file, null)
             })
@@ -365,14 +370,11 @@ const MONACO = (() => {
         if (existingModel) {
             model = existingModel
             if (model.getValue() !== value) {
-                console.log('File content mismatch; reload might not be triggered properly?')
+                console.log('File was edited during save process; keeping editor copy as-is')
                 //model.setValue(value)
             }
         } else {
             model = monaco.editor.createModel(value, LANG_ID, uri)
-
-            let savingPromise: Promise<void> | null = null
-            let saveTime = Date.now()
     
             let wasReset = false
             model.onDidChangeContent(e => {
@@ -382,20 +384,30 @@ const MONACO = (() => {
                 }
                 requestAnimationFrame(() => {
                     if (NATIVE.isEnabled()) {
-                        const currentSaveTime = saveTime
-                        saveTime = currentSaveTime
-                        savingPromise = (async () => {
+                        const currentSaveTime = Date.now()
+                        savingTimes[file.path] = currentSaveTime
+                        if (!savingSpinners[file.path]) {
+                            const spinner = MARKUP.makeLoadingSpinner()
+                            fileListItems[file.path]?.appendChild(spinner)
+                            savingSpinners[file.path] = spinner
+                        }
+                        savingPromises[file.path] = (async () => {
                             await wait(SAVE_DELAY)
-                            if (saveTime === currentSaveTime) {
+                            if (savingTimes[file.path] === currentSaveTime) {
                                 await NATIVE.saveFile(file.path, model.getValue())
-                                const newProject = await PARSER.parseStory(project.path, NETWORK_LOADER)
+                                const newProject = await PARSER.parseStory(project.path)
                                 await loadProject(newProject)
                                 const newFile = newProject.files[file.path]
                                 if (newFile) {
                                     await loadFile(newProject, newFile, null)
                                 }
+                                const spinner = savingSpinners[file.path]
+                                if (spinner) {
+                                    spinner.remove()
+                                    delete savingSpinners[file.path]
+                                }
+                                delete savingPromises[file.path]
                             }
-                            savingPromise = null
                         })()
                     } else {
                         wasReset = true

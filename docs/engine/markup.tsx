@@ -38,6 +38,18 @@ const MARKUP = (() => {
         {menu}
         {codeEditor}
     </div> as HTMLDivElement
+
+    function makeLoadingSpinner() {
+        const spinner = <div className="spinner">
+            <div />
+            <div />
+            <div />
+            <div />
+            <div />
+            <div />
+        </div> as HTMLDivElement
+        return spinner
+    }
     
     document.body.append(main)
 
@@ -55,5 +67,6 @@ const MARKUP = (() => {
         caret,
         textbox,
         main,
+        makeLoadingSpinner,
     }
 })()

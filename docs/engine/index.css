@@ -159,10 +159,13 @@ html, body {
 }
 
 .file {
+    display: flex;
     color: white;
     background: #333;
     font-size: 12px;
     padding: 5px 10px;
+    cursor: pointer;
+    gap: 5px;
 }
 
 .file:hover {
@@ -237,6 +240,65 @@ html, body {
 
 .closed {
     display: none !important;
+}
+
+.spinner {
+    position: relative;
+    height: 100%;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    animation: spin linear 3s infinite;
+}
+
+.spinner > div {
+    position: absolute;
+    width: 80%;
+    height: 80%;
+}
+
+.spinner > div::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    width: 25%;
+    height: 25%;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.spinner > div:nth-child(1) {
+    transform: rotate(0deg);
+}
+
+.spinner > div:nth-child(2) {
+    transform: rotate(60deg);
+}
+
+.spinner > div:nth-child(3) {
+    transform: rotate(120deg);
+}
+
+.spinner > div:nth-child(4) {
+    transform: rotate(180deg);
+}
+
+.spinner > div:nth-child(5) {
+    transform: rotate(240deg);
+}
+
+.spinner > div:nth-child(6) {
+    transform: rotate(300deg);
+}
+
+@keyframes spin {
+    from {
+        transform: rotateZ(0deg);
+    }
+    to {
+        transform: rotateZ(360deg);
+    }
 }
 
 @keyframes fadeIn {
