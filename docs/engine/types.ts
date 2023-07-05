@@ -19,6 +19,7 @@ interface InterpreterCharacterState {
 }
 
 interface StoryDefinition {
+    name: string
     characters: Partial<Record<string, CharacterDefinition>>
     backdrops: Partial<Record<string, BackdropDefinition>>
     sounds: Partial<Record<string, SoundDefinition>>

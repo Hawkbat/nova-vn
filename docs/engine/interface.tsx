@@ -11,7 +11,30 @@ const INTERFACE = (() => {
     let textRevealPromise: ExposedPromise<void> | null = null
     let advancePromise: ExposedPromise<void> | null = null
 
-    async function reset() {
+    async function loadMainMenu(projects: ProjectContext[]) {
+        MARKUP.mainMenu.classList.remove('closed')
+        MARKUP.viewport.classList.add('closed')
+        MARKUP.textbox.classList.add('closed')
+
+        MARKUP.mainMenu.innerHTML = ''
+
+        for (const project of projects) {
+            MARKUP.mainMenu.append(<div className="button" onclick={() => ENGINE.runProject(project)}>Play {project.definition.name}</div>)
+        }
+
+        if (NATIVE.isEnabled()) {
+            MARKUP.mainMenu.append(<div className="button" onclick={() => NATIVE.close()}>Quit to Desktop</div>)
+        }
+    }
+
+    async function loadStory(project: ProjectContext) {
+        MARKUP.mainMenu.classList.add('closed')
+        MARKUP.viewport.classList.remove('closed')
+        MARKUP.textbox.classList.remove('closed')
+        await resetStory()
+    }
+
+    async function resetStory() {
         changeBackdrop(null)
         for (const el of Object.values(characterElements)) {
             if (el) {
@@ -247,7 +270,9 @@ const INTERFACE = (() => {
     })
 
     return {
-        reset,
+        loadMainMenu,
+        loadStory,
+        resetStory,
         addCharacter,
         removeCharacter,
         moveCharacter,

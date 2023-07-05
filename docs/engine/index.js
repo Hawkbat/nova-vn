@@ -1,42 +1,83 @@
 "use strict";
-requestAnimationFrame(async () => {
-    let project = null;
-    if (!project) {
+const ENGINE = (() => {
+    async function loadProjects() {
+        if (NATIVE.isEnabled()) {
+            let projects = [];
+            for (const dir of await NATIVE.listDirectories('./')) {
+                if (dir === 'engine')
+                    continue;
+                try {
+                    const project = await PARSER.parseStory(dir);
+                    projects.push(project);
+                    console.log(`Loaded project '${project.path}'`);
+                }
+                catch (e) {
+                    if (String(e).includes('Failed to fetch')) {
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+            }
+            return projects;
+        }
+        else {
+            let project = null;
+            if (!project) {
+                try {
+                    project = await PARSER.parseStory('project');
+                }
+                catch (e) {
+                    if (String(e).includes('Failed to fetch project file')) {
+                        console.warn(`Unable to load project file; falling back to showing the docs project`);
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+            }
+            if (!project) {
+                project = await PARSER.parseStory('docs_project');
+            }
+            return project ? [project] : [];
+        }
+    }
+    async function runProject(project) {
         try {
-            project = await PARSER.parseStory('project');
+            await MONACO.loadProject(project);
+            for (const file of Object.values(project.files)) {
+                if (file?.errors.length) {
+                    await MONACO.loadFile(project, file, file.errors[0].range);
+                    MONACO.setCodeEditorOpen(true);
+                }
+            }
+            await INTERPRETER.runProject(project);
         }
         catch (e) {
-            if (String(e).includes('Failed to fetch project file')) {
-                console.warn(`Unable to load project file; falling back to showing the docs project`);
+            if (e instanceof ParseError || e instanceof InterpreterError) {
+                console.error(e);
+                e.file.errors.push(e);
+                await MONACO.loadFile(project, e.file, e.range);
+                MONACO.setCodeEditorOpen(true);
             }
             else {
                 throw e;
             }
         }
     }
-    if (!project) {
-        project = await PARSER.parseStory('engine/docs_project');
+    return {
+        loadProjects,
+        runProject,
+    };
+})();
+requestAnimationFrame(async () => {
+    const projects = await ENGINE.loadProjects();
+    const project = projects.length === 1 ? projects[0] : null;
+    if (project) {
+        await ENGINE.runProject(project);
     }
-    try {
-        await MONACO.loadProject(project);
-        for (const file of Object.values(project.files)) {
-            if (file?.errors.length) {
-                await MONACO.loadFile(project, file, file.errors[0].range);
-                MONACO.setCodeEditorOpen(true);
-            }
-        }
-        await INTERPRETER.runProject(project);
-    }
-    catch (e) {
-        if (e instanceof ParseError || e instanceof InterpreterError) {
-            console.error(e);
-            e.file.errors.push(e);
-            await MONACO.loadFile(project, e.file, e.range);
-            MONACO.setCodeEditorOpen(true);
-        }
-        else {
-            throw e;
-        }
+    else {
+        await INTERFACE.loadMainMenu(projects);
     }
 });
 const INTERFACE = (() => {
@@ -49,7 +90,27 @@ const INTERFACE = (() => {
     const characterElements = {};
     let textRevealPromise = null;
     let advancePromise = null;
-    async function reset() {
+    async function loadMainMenu(projects) {
+        MARKUP.mainMenu.classList.remove('closed');
+        MARKUP.viewport.classList.add('closed');
+        MARKUP.textbox.classList.add('closed');
+        MARKUP.mainMenu.innerHTML = '';
+        for (const project of projects) {
+            MARKUP.mainMenu.append(h("div", { className: "button", onclick: () => ENGINE.runProject(project) },
+                "Play ",
+                project.definition.name));
+        }
+        if (NATIVE.isEnabled()) {
+            MARKUP.mainMenu.append(h("div", { className: "button", onclick: () => NATIVE.close() }, "Quit to Desktop"));
+        }
+    }
+    async function loadStory(project) {
+        MARKUP.mainMenu.classList.add('closed');
+        MARKUP.viewport.classList.remove('closed');
+        MARKUP.textbox.classList.remove('closed');
+        await resetStory();
+    }
+    async function resetStory() {
         changeBackdrop(null);
         for (const el of Object.values(characterElements)) {
             if (el) {
@@ -257,7 +318,9 @@ const INTERFACE = (() => {
         });
     });
     return {
-        reset,
+        loadMainMenu,
+        loadStory,
+        resetStory,
         addCharacter,
         removeCharacter,
         moveCharacter,
@@ -275,7 +338,7 @@ const INTERPRETER = (() => {
     let currentAction = null;
     async function runProject(project) {
         currentProject = project;
-        await INTERFACE.reset();
+        await INTERFACE.loadStory(project);
         const story = {
             history: [],
             state: {
@@ -879,9 +942,11 @@ const MARKUP = (() => {
     }
     let currentBackdrop = h("div", { className: "backdrop" });
     const characterBounds = h("div", { id: "characterBounds" });
-    const viewport = h("div", { id: "viewport" },
+    const viewport = h("div", { id: "viewport", className: "closed" },
         currentBackdrop,
         characterBounds);
+    const mainMenu = h("div", { id: "mainMenu", onclick: clickTrap },
+        h("div", { className: "loader" }, makeLoadingSpinner()));
     const menu = h("div", { id: "menu", className: "closed", onclick: clickTrap });
     const codeFiles = h("div", { id: "codeFiles" });
     const codePane = h("div", { id: "codePane" });
@@ -892,7 +957,7 @@ const MARKUP = (() => {
     const dialogue = h("div", { id: "dialogue" });
     const caret = h("div", { id: "caret" });
     const choiceList = h("div", { id: "choiceList" });
-    const textbox = h("div", { id: "textbox" },
+    const textbox = h("div", { id: "textbox", className: "closed" },
         nameplate,
         dialogue,
         caret,
@@ -900,6 +965,7 @@ const MARKUP = (() => {
     const main = h("div", { id: "main" },
         viewport,
         textbox,
+        mainMenu,
         menu,
         codeEditor);
     function makeLoadingSpinner() {
@@ -917,6 +983,7 @@ const MARKUP = (() => {
         currentBackdrop,
         characterBounds,
         viewport,
+        mainMenu,
         menu,
         codeFiles,
         codePane,
@@ -1480,18 +1547,38 @@ const NATIVE = (() => {
     }
     async function loadFile(path) {
         await waitForInitialize();
-        const text = await Neutralino.filesystem.readFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`);
+        const text = await Neutralino.filesystem.readFile(getProjectPath(path));
         return text;
     }
     async function saveFile(path, content) {
         await waitForInitialize();
-        await Neutralino.filesystem.writeFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`, content);
+        await Neutralino.filesystem.writeFile(getProjectPath(path), content);
+    }
+    async function listFiles(path) {
+        await waitForInitialize();
+        const stats = await Neutralino.filesystem.readDirectory(getProjectPath(path));
+        return stats.filter(s => s.type === 'FILE').map(s => s.entry);
+    }
+    async function listDirectories(path) {
+        await waitForInitialize();
+        const stats = await Neutralino.filesystem.readDirectory(getProjectPath(path));
+        return stats.filter(s => s.type === 'DIRECTORY').map(s => s.entry).filter(s => !['..', '.'].includes(s));
+    }
+    async function close() {
+        await waitForInitialize();
+        await Neutralino.app.exit();
+    }
+    function getProjectPath(path) {
+        return `${NL_PATH}/${NL_PROJECT_DIR}/${path.replaceAll('..', '')}`;
     }
     return {
         isEnabled,
         waitForInitialize,
         loadFile,
         saveFile,
+        listFiles,
+        listDirectories,
+        close,
     };
 })();
 const PARSER = (() => {
@@ -1508,6 +1595,7 @@ const PARSER = (() => {
     async function parseStory(projectPath) {
         const project = {
             definition: {
+                name: projectPath,
                 characters: {},
                 backdrops: {},
                 sounds: {},
@@ -2114,7 +2202,7 @@ const PARSER = (() => {
     }
     function peekAnyIdentifier(file, subType) {
         if (isIdentifierChar(file, file.cursor) && isWordBoundary(file, file.cursor)) {
-            let cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
+            const cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
             while (isIdentifierChar(file, cursor)) {
                 cursor.col++;
             }
@@ -2125,7 +2213,7 @@ const PARSER = (() => {
     }
     function peekVariable(file) {
         if (isChar(file, file.cursor, '$')) {
-            let cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
+            const cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
             while (isIdentifierChar(file, cursor)) {
                 cursor.col++;
             }
@@ -2136,7 +2224,7 @@ const PARSER = (() => {
     }
     function peekNumber(file) {
         if (isNumeric(file, file.cursor)) {
-            let cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
+            const cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
             while (isNumeric(file, cursor)) {
                 cursor.col++;
             }
@@ -2153,7 +2241,7 @@ const PARSER = (() => {
     }
     function peekString(file) {
         if (isChar(file, file.cursor, '"')) {
-            let cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
+            const cursor = { row: file.cursor.row, col: file.cursor.col + 1 };
             while (!isChar(file, cursor, '"') && !isOutOfBounds(file, cursor)) {
                 cursor.col++;
             }
@@ -2161,6 +2249,20 @@ const PARSER = (() => {
                 cursor.col++;
             }
             const token = peek(file, 'string', cursor.col - file.cursor.col);
+            const subCursor = { row: token.range.row, col: token.range.start };
+            while (subCursor.col < token.range.end) {
+                if (isChar(file, subCursor, '$')) {
+                    const start = subCursor.col;
+                    subCursor.col++;
+                    while (isIdentifierChar(file, subCursor)) {
+                        subCursor.col++;
+                    }
+                    const end = subCursor.col;
+                    const varToken = parseToken(file, 'variable', subCursor.row, start, end);
+                    file.tokens.push(varToken);
+                }
+                subCursor.col++;
+            }
             return token;
         }
         return null;

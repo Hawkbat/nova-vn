@@ -6,7 +6,7 @@ const INTERPRETER = (() => {
 
     async function runProject(project: ProjectContext) {
         currentProject = project
-        await INTERFACE.reset()
+        await INTERFACE.loadStory(project)
         const story: InterpreterStoryContext = {
             history: [],
             state: {

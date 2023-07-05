@@ -6,6 +6,7 @@ Multi-outfit support is confusing, not sure how to help
 Make error messages more descriptive to describe what the user should try to fix it
 Variable interpolation in strings, like "You ate $cookieCount cookies"
 Autocomplete is broken in some contexts, need to debug
+Change editor tooling to use file line state instead of scanning for character IDs for context
 
 == MEDIUM-TERM ==
 
@@ -15,7 +16,6 @@ Story metadata
     Possibly as directives in story.nvn?
     Should they be able to be changed in passages (like title?)
         Maybe just subtitles/save titles
-Main menu
 Save files (save and load story state, export/import)
 "Rewind" to previous story states
 Fast forward/skip
@@ -24,6 +24,3 @@ Fast forward/skip
 == LONG-TERM ==
 
 Can we defer character identifier validation for character actions? Maybe if we can exhaustively eliminate the list of other actions first
-Multi-project support
-    On desktop, load list of projects by checking root folders for story.nvn files
-    On web, just auto-load "project" folder

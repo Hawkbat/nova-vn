@@ -15,6 +15,7 @@ const PARSER = (() => {
     async function parseStory(projectPath: string) {
         const project: ProjectContext = {
             definition: {
+                name: projectPath,
                 characters: {},
                 backdrops: {},
                 sounds: {},
@@ -627,7 +628,7 @@ const PARSER = (() => {
 
     function peekAnyIdentifier(file: FileContext, subType: ParseTokenSubType) {
         if (isIdentifierChar(file, file.cursor) && isWordBoundary(file, file.cursor)) {
-            let cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
+            const cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
             while (isIdentifierChar(file, cursor)) {
                 cursor.col++
             }
@@ -639,7 +640,7 @@ const PARSER = (() => {
 
     function peekVariable(file: FileContext) {
         if (isChar(file, file.cursor, '$')) {
-            let cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
+            const cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
             while (isIdentifierChar(file, cursor)) {
                 cursor.col++
             }
@@ -651,7 +652,7 @@ const PARSER = (() => {
 
     function peekNumber(file: FileContext) {
         if (isNumeric(file, file.cursor)) {
-            let cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
+            const cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
             while (isNumeric(file, cursor)) {
                 cursor.col++
             }
@@ -669,7 +670,7 @@ const PARSER = (() => {
 
     function peekString(file: FileContext) {
         if (isChar(file, file.cursor, '"')) {
-            let cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
+            const cursor: ParsePointer = { row: file.cursor.row, col: file.cursor.col + 1 }
             while (!isChar(file, cursor, '"') && !isOutOfBounds(file, cursor)) {
                 cursor.col++
             }
@@ -677,6 +678,20 @@ const PARSER = (() => {
                 cursor.col++
             }
             const token = peek(file, 'string', cursor.col - file.cursor.col)
+            const subCursor: ParsePointer = { row: token.range.row, col: token.range.start }
+            while (subCursor.col < token.range.end) {
+                if (isChar(file, subCursor, '$')) {
+                    const start = subCursor.col
+                    subCursor.col++
+                    while (isIdentifierChar(file, subCursor)) {
+                        subCursor.col++
+                    }
+                    const end = subCursor.col
+                    const varToken = parseToken(file, 'variable', subCursor.row, start, end)
+                    file.tokens.push(varToken)
+                }
+                subCursor.col++
+            }
             return token
         }
         return null

@@ -138,6 +138,36 @@ html, body {
     z-index: 300;
 }
 
+#mainMenu {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+    padding: 10vmin;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+#mainMenu .button {
+    text-align: center;
+    font-size: 7vmin;
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 10px;
+    padding: 10px 20px;
+    animation: fadeIn 0.5s forwards;
+}
+
+#mainMenu .button:hover {
+    color: white;
+}
+
+#mainMenu .loader {
+    height: 20vmin;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
 #codeEditor {
     position: absolute;
     top: 20px;
@@ -228,10 +258,14 @@ html, body {
 }
 
 .choice {
-    background: rgba(0, 0, 0, 0.9);
+    background: rgba(0, 0, 0, 0.8);
     border-radius: 10px;
     padding: 10px 20px;
     animation: fadeIn 0.5s forwards;
+}
+
+.choice:hover {
+    color: white;
 }
 
 .hide {

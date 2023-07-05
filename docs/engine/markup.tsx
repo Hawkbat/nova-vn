@@ -7,10 +7,12 @@ const MARKUP = (() => {
     
     let currentBackdrop = <div className="backdrop" /> as HTMLDivElement
     const characterBounds = <div id="characterBounds" /> as HTMLDivElement
-    const viewport = <div id="viewport">
+    const viewport = <div id="viewport" className="closed">
         {currentBackdrop}
         {characterBounds}
     </div> as HTMLDivElement
+
+    const mainMenu = <div id="mainMenu" onclick={clickTrap}><div className="loader">{makeLoadingSpinner()}</div></div> as HTMLDivElement
 
     const menu = <div id="menu" className="closed" onclick={clickTrap} /> as HTMLDivElement
     
@@ -25,7 +27,7 @@ const MARKUP = (() => {
     const dialogue = <div id="dialogue" /> as HTMLDivElement
     const caret = <div id="caret" /> as HTMLDivElement
     const choiceList = <div id="choiceList" /> as HTMLDivElement
-    const textbox = <div id="textbox">
+    const textbox = <div id="textbox" className="closed">
         {nameplate}
         {dialogue}
         {caret}
@@ -35,6 +37,7 @@ const MARKUP = (() => {
     const main = <div id="main">
         {viewport}
         {textbox}
+        {mainMenu}
         {menu}
         {codeEditor}
     </div> as HTMLDivElement
@@ -57,6 +60,7 @@ const MARKUP = (() => {
         currentBackdrop,
         characterBounds,
         viewport,
+        mainMenu,
         menu,
         codeFiles,
         codePane,

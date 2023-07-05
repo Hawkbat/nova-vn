@@ -32,13 +32,34 @@ const NATIVE = (() => {
 
     async function loadFile(path: string) {
         await waitForInitialize()
-        const text = await Neutralino.filesystem.readFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`)
+        const text = await Neutralino.filesystem.readFile(getProjectPath(path))
         return text
     }
 
     async function saveFile(path: string, content: string) {
         await waitForInitialize()
-        await Neutralino.filesystem.writeFile(`${NL_PATH}/${NL_PROJECT_DIR}/${path}`, content)
+        await Neutralino.filesystem.writeFile(getProjectPath(path), content)
+    }
+
+    async function listFiles(path: string) {
+        await waitForInitialize()
+        const stats = await Neutralino.filesystem.readDirectory(getProjectPath(path))
+        return stats.filter(s => s.type === 'FILE').map(s => s.entry)
+    }
+
+    async function listDirectories(path: string) {
+        await waitForInitialize()
+        const stats = await Neutralino.filesystem.readDirectory(getProjectPath(path))
+        return stats.filter(s => s.type === 'DIRECTORY').map(s => s.entry).filter(s => !['..', '.'].includes(s))
+    }
+
+    async function close() {
+        await waitForInitialize()
+        await Neutralino.app.exit()
+    }
+
+    function getProjectPath(path: string) {
+        return `${NL_PATH}/${NL_PROJECT_DIR}/${path.replaceAll('..', '')}`
     }
     
     return {
@@ -46,5 +67,8 @@ const NATIVE = (() => {
         waitForInitialize,
         loadFile,
         saveFile,
+        listFiles,
+        listDirectories,
+        close,
     }
 })()
