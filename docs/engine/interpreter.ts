@@ -69,18 +69,30 @@ const INTERPRETER = (() => {
                     await INTERFACE.playSound(sound)
                 },
                 narration: async a => {
-                    await INTERFACE.displayText(a.text, null)
+                    const text = resolveVariableValue(project, story, a.textRange, a.text, null, true)
+                    if (!isVariableValueType(text, 'string')) {
+                        throw new InterpreterError(project.files[a.range.file]!, a.textRange, `Narration actions must be given a text value but instead this was a '${getVariableValueType(text)}'`)
+                    }
+                    await INTERFACE.displayText(text.string, null)
                 },
                 option: async a => {
-                    let options = [a]
+                    const options = [a]
                     while (actions[i + 1]?.type === 'option') {
                         options.push(actions[i + 1] as PassageActionOfType<'option'>)
                         i++
                     }
-                    await INTERFACE.presentChoice(options.map(o => ({
-                        text: o.text,
-                        onSelect: async () => await runActionList(project, story, o.actions),
-                    })))
+                    const choices: ChoiceOption[] = []
+                    for (const o of options) {
+                        const text = resolveVariableValue(project, story, o.textRange, o.text, null, true)
+                        if (!isVariableValueType(text, 'string')) {
+                            throw new InterpreterError(project.files[o.range.file]!, o.textRange, `Option actions must be given a text value but instead this was a '${getVariableValueType(text)}'`)
+                        }
+                        choices.push({
+                            text: text.string,
+                            onSelect: async () => await runActionList(project, story, o.actions),
+                        })
+                    }
+                    await INTERFACE.presentChoice(choices)
                 },
                 characterEntry: async a => {
                     const character = project.definition.characters[a.characterID]
@@ -102,7 +114,13 @@ const INTERPRETER = (() => {
                     await INTERFACE.moveCharacter(character, a.location)
                 },
                 characterSpeech: async a => {
-                    await INTERFACE.displayText(a.text, project.definition.characters[a.characterID]?.name ?? null)
+                    const character = project.definition.characters[a.characterID]
+                    if (!character) throw new InterpreterError(project.files[a.range.file]!, a.range, `There are no defined characters named '${a.characterID}'!`)
+                    const text = resolveVariableValue(project, story, a.textRange, a.text, a.characterID, true)
+                    if (!isVariableValueType(text, 'string')) {
+                        throw new InterpreterError(project.files[a.range.file]!, a.textRange, `Character speech actions must be given a text value but instead this was a '${getVariableValueType(text)}'`)
+                    }
+                    await INTERFACE.displayText(text.string, character.name)
                 },
                 characterExpressionChange: async a => {
                     const character = project.definition.characters[a.characterID]
@@ -123,8 +141,8 @@ const INTERPRETER = (() => {
                     await INTERFACE.changeCharacterSprite(character, outfit, expression)
                 },
                 check: async a => {
-                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID)
-                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID)
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID, false)
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID, true)
                     let valid = false
                     let comparisonMap: Partial<Record<CheckComparisonType, () => boolean>> = {}
                     if (getVariableValueType(left) === getVariableValueType(right)) {
@@ -172,13 +190,13 @@ const INTERPRETER = (() => {
                     }
                 },
                 varSet: async a => {
-                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID)
-                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID)
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID, false)
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID, true)
                     updateVariableValue(story, a.variableID, right, a.characterID)
                 },
                 varAdd: async a => {
-                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID)
-                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID)
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID, false)
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID, true)
                     if (isVariableValueType(left, 'number') && isVariableValueType(right, 'number')) {
                         updateVariableValue(story, a.variableID, { number: left.number + right.number }, a.characterID)
                     } else if (isVariableValueType(left, 'string') && isVariableValueType(right, 'string')) {
@@ -187,7 +205,7 @@ const INTERPRETER = (() => {
                         updateVariableValue(story, a.variableID, { list: [...left.list, right] }, a.characterID)
                     } else if (isVariableValueType(left, 'map')) {
                         if (!a.key) throw new InterpreterError(project.files[a.range.file]!, a.range, `Variable '${a.variableID}' is a 'map' variable, which means any additions to it must have a text key specified!`)
-                        const key = resolveVariableValue(project, story, a.range, a.key, a.characterID)
+                        const key = resolveVariableValue(project, story, a.range, a.key, a.characterID, true)
                         if (!isVariableValueType(key, 'string')) throw new InterpreterError(project.files[a.range.file]!, a.range, `Variable '${a.variableID}' is a 'map' variable, which means any additions to it must have a text key specified, but the key value had type '${getVariableValueType(key)}' instead!`)
                         updateVariableValue(story, a.variableID, { map: { ...left.map, [key.string]: right } }, a.characterID)
                     } else {
@@ -195,8 +213,8 @@ const INTERPRETER = (() => {
                     }
                 },
                 varSubtract: async a => {
-                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID)
-                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID)
+                    const left = getVariableValue(project, story, a.range, a.variableID, a.characterID, false)
+                    const right = resolveVariableValue(project, story, a.range, a.value, a.characterID, true)
                     if (isVariableValueType(left, 'number') && isVariableValueType(right, 'number')) {
                         updateVariableValue(story, a.variableID, { number: left.number - right.number }, a.characterID)
                     } else if (isVariableValueType(left, 'list')) {
@@ -257,28 +275,51 @@ const INTERPRETER = (() => {
         }
     }
 
-    function getVariableValue(project: ProjectContext, story: InterpreterStoryContext, range: FileRange, variableID: string, characterID: string | null): VariableValue {
-        const rawValue = getVariableValueRaw(project, story, variableID, characterID)
+    function getVariableValue(project: ProjectContext, story: InterpreterStoryContext, range: FileRange, variableID: string, characterID: string | null, allowGlobals: boolean): VariableValue {
+        const rawValue = getVariableValueRaw(project, story, variableID, characterID, allowGlobals)
         if (!rawValue) {
             throw new InterpreterError(project.files[range.file]!, range, `No variable named '${variableID}' is defined!`)
         }
-        const resolvedValue = resolveVariableValue(project, story, range, rawValue, characterID)
+        const resolvedValue = resolveVariableValue(project, story, range, rawValue, characterID, allowGlobals)
         return resolvedValue
     }
 
-    function resolveVariableValue(project: ProjectContext, story: InterpreterStoryContext, range: FileRange, value: VariableValue, characterID: string | null): VariableValue {
+    function resolveVariableValue(project: ProjectContext, story: InterpreterStoryContext, range: FileRange, value: VariableValue, characterID: string | null, allowGlobals: boolean): VariableValue {
         let unrollCount = 100
         while ((unrollCount--) > 0 && isVariableValueType(value, 'variable')) {
-            const unrolledValue = getVariableValueRaw(project, story, value.variable, characterID)
+            const unrolledValue = getVariableValueRaw(project, story, value.variable, characterID, allowGlobals)
             if (!unrolledValue) {
                 throw new InterpreterError(project.files[range.file]!, range, `No variable named '${value.variable}' is defined!`)
             }
             value = unrolledValue
         }
+        if (isVariableValueType(value, 'string')) {
+            const file = project.files[range.file]!
+            const subTokens = file.tokens.filter(t => t.range.row === range.row && t.range.start > range.start && t.range.end < range.end)
+            if (subTokens.length) {
+                let resolvedValue = ''
+                for (let i = range.start + 1; i < range.end - 1; i++) {
+                    const subToken = subTokens.find(t => t.range.start === i)
+                    if (subToken) {
+                        if (subToken.type === 'variable') {
+                            const value = getVariableValue(project, story, { file: file.path, ...subToken.range }, subToken.text, characterID, allowGlobals)
+                            const str = printVariableValue(value)
+                            resolvedValue += str
+                            i = subToken.range.end - 1
+                        } else {
+                            throw new InterpreterError(file, subToken.range, `Cannot handle this kind of element within a text value: ${subToken.type}`)
+                        }
+                    } else {
+                        resolvedValue += file.lines[range.row][i]
+                    }
+                }
+                return { string: resolvedValue }
+            }
+        }
         return value
     }
 
-    function getVariableValueRaw(project: ProjectContext, story: InterpreterStoryContext, variableID: string, characterID: string | null): VariableValue | null {
+    function getVariableValueRaw(project: ProjectContext, story: InterpreterStoryContext, variableID: string, characterID: string | null, allowGlobals: boolean): VariableValue | null {
         if (characterID) {
             const characterVariables = story.state.characters[characterID]?.variables
             if (characterVariables) {
@@ -298,7 +339,8 @@ const INTERPRETER = (() => {
             if (castVariableDef && castVariableDef.scope === 'cast') {
                 return castVariableDef.initialValue
             }
-        } else {
+        }
+        if (!characterID || allowGlobals) {
             const globalVariable = story.state.variables[variableID]
             if (globalVariable) {
                 return globalVariable as VariableValue
@@ -319,8 +361,28 @@ const INTERPRETER = (() => {
         return Object.keys(value)[0] as VariableValueType
     }
 
-    function getVariableActualValue(value: VariableValue): any {
+    function getVariableJsonValue(value: VariableValue): any {
         return Object.values(value)[0]
+    }
+
+    function printVariableValue(value: VariableValue): string {
+        if (isVariableValueType(value, 'string')) {
+            return value.string
+        } else if (isVariableValueType(value, 'number')) {
+            return value.number.toString()
+        } else if (isVariableValueType(value, 'boolean')) {
+            return value.boolean ? 'Yes' : 'No'
+        } else if (isVariableValueType(value, 'null')) {
+            return 'Nothing'
+        } else if (isVariableValueType(value, 'list')) {
+            return value.list.length ? prettyJoin(value.list.map(v => printVariableValue(v)), 'and') : 'Nothing'
+        } else if (isVariableValueType(value, 'map')) {
+            return Object.keys(value.map).length ? prettyJoin(Object.entries(value.map).map(([k, v]) => `${printVariableValue(v)} as ${k}`), 'and') : 'Nothing'
+        } else if (isVariableValueType(value, 'variable')) {
+            return value.variable
+        } else {
+            return String(getVariableJsonValue(value))
+        }
     }
 
     function structuralEquality(left: VariableValue, right: VariableValue): boolean {
@@ -330,7 +392,7 @@ const INTERPRETER = (() => {
         } else if (isVariableValueType(left, 'map') && isVariableValueType(right, 'map')) {
             return Object.keys(left.map).length === Object.keys(right.map).length && Object.keys(left.map).every(k => structuralEquality(left.map[k], right.map[k]))
         } else {
-            return getVariableActualValue(left) === getVariableActualValue(right)
+            return getVariableJsonValue(left) === getVariableJsonValue(right)
         }
     }
 

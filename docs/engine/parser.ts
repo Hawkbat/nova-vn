@@ -65,7 +65,7 @@ const PARSER = (() => {
                 return optionMap[keyword](token)
             }
         }
-        const keywordList = keywords.map((v, i, a) => a.length && i === a.length - 1 ? `or '${v}'` : `'${v}'`).join(keywords.length > 2 ? ', ' : ' ')
+        const keywordList = prettyJoin(keywords, 'or')
         const token = peekAny(file)
         throw new ParseError(file, token.range, `${error} ${keywordList}, but this line has '${token.text}' instead.`)
     }
@@ -78,7 +78,7 @@ const PARSER = (() => {
                 return optionMap[identifier](token)
             }
         }
-        const identifierList = identifiers.map((v, i, a) => a.length && i === a.length - 1 ? `or '${v}'` : `'${v}'`).join(identifiers.length > 2 ? ', ' : ' ')
+        const identifierList = prettyJoin(identifiers, 'or')
         const token = peekAny(file)
         throw new ParseError(file, token.range, `${error} ${identifierList}, but this line has '${token.text}' instead.`)
     }
@@ -269,9 +269,10 @@ const PARSER = (() => {
                 },
                 moves: t => optionMap.move(t),
                 say: t => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`).string
+                    const textToken = advance(file, peekString(file), `Character speech actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`)
+                    const text = processVariableValueOfType(file, textToken, 'string', `Character speech action text must be enclosed in double-quotes, like '"Hello!"'`)
                     checkEndOfLine(file, `Character speech actions must not have anything here after the speech text`)
-                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text, characterRange })
+                    parent.actions.push({ type: 'characterSpeech', range: getFileRange(file, t), characterID, text, textRange: getFileRange(file, textToken), characterRange })
                 },
                 says: t => optionMap.say(t),
                 emote: t => {
@@ -362,14 +363,16 @@ const PARSER = (() => {
                     parent.actions.push({ type: 'playSound', range: getFileRange(file, t), soundID, soundRange: getFileRange(file, identifierToken) })
                 },
                 narrate: t => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`), 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`).string
+                    const textToken = advance(file, peekString(file), `Narration actions must have the text to display here, enclosed in double-quotes, like '"Hello!"'`)
+                    const text = processVariableValueOfType(file, textToken, 'string', `Narration text must be enclosed in double-quotes, like '"Hello!"'`)
                     checkEndOfLine(file, `Narration actions must not have anything here after the narration text`)
-                    parent.actions.push({ type: 'narration', range: getFileRange(file, t), text })
+                    parent.actions.push({ type: 'narration', range: getFileRange(file, t), text, textRange: getFileRange(file, textToken) })
                 },
                 option: t => {
-                    const text = processVariableValueOfType(file, advance(file, peekString(file), `Passage options must have the text to display here, enclosed in double-quotes, like '"Pick Me"'`), 'string', `Passage option text must be enclosed in double-quotes, like '"Pick Me"'`).string
+                    const textToken = advance(file, peekString(file), `Passage options must have the text to display here, enclosed in double-quotes, like '"Pick Me"'`)
+                    const text = processVariableValueOfType(file, textToken, 'string', `Passage option text must be enclosed in double-quotes, like '"Pick Me"'`)
                     checkEndOfLine(file, `Passage options must not have anything here after the option text`)
-                    const optionDefinition: PassageActionOfType<'option'> = { type: 'option', range: getFileRange(file, t), text, actions: [] }
+                    const optionDefinition: PassageActionOfType<'option'> = { type: 'option', range: getFileRange(file, t), text, textRange: getFileRange(file, textToken), actions: [] }
                     parent.actions.push(optionDefinition)
                     file.states.push({ indent, passage, actionContainer: optionDefinition })
                 },
@@ -570,7 +573,8 @@ const PARSER = (() => {
 
     function parseToken(file: FileContext, type: ParseTokenType, row: number, start: number, end: number, subType?: ParseTokenSubType) {
         const range: ParseRange = { row, start, end }
-        const token: ParseToken = { type, range, text: readRange(file, range), subType }
+        const token: ParseToken = { type, range, text: readRange(file, range) }
+        if (subType) token.subType = subType
         return token
     }
 

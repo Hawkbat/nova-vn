@@ -108,10 +108,12 @@ type PassageAction = ({
     soundRange: FileRange
 } | {
     type: 'narration'
-    text: string
+    text: VariableValue
+    textRange: FileRange
 } | {
     type: 'option'
-    text: string
+    text: VariableValue
+    textRange: FileRange
     actions: PassageAction[]
 } | {
     type: 'characterEntry'
@@ -131,8 +133,9 @@ type PassageAction = ({
 } | {
     type: 'characterSpeech'
     characterID: string
-    text: string
+    text: VariableValue
     characterRange: FileRange
+    textRange: FileRange
 } | {
     type: 'characterExpressionChange'
     characterID: string

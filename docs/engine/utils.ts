@@ -54,6 +54,10 @@ function safeFloatParse(s: string, defaultValue: number) {
     return v
 }
 
+function prettyJoin(items: string[], type: 'and' | 'or' | '') {
+    return items.length > 1 ? items.map((v, i, a) => a.length && i === a.length - 1 && type ? `${type} '${v}'` : `'${v}'`).join(items.length > 2 ? ', ' : ' ') : items.length > 0 ? items[0] : ''
+}
+
 interface ExposedPromise<T> extends Promise<T> {
     resolve: (value: T | PromiseLike<T>) => void
     reject: (reason?: any) => void
