@@ -18,6 +18,10 @@ const ENGINE = (() => {
                     }
                 }
             }
+            if (!projects.length) {
+                const project = await PARSER.parseStory('engine/docs_project')
+                projects.push(project)
+            }
             return projects
         } else {
             let project: ProjectContext | null = null
@@ -33,7 +37,7 @@ const ENGINE = (() => {
                 }
             }
             if (!project) {
-                project = await PARSER.parseStory('docs_project')
+                project = await PARSER.parseStory('engine/docs_project')
             }
             return project ? [project] : []
         }
